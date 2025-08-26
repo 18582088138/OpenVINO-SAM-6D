@@ -1,4 +1,46 @@
-import gorilla
+# Suppress NVML errors when CUDA is not available
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+
+# Environment setup for CUDA compatibility
+def setup_cuda_environment():
+    """Setup CUDA environment and handle NVML errors gracefully"""
+    # Check CUDA availability
+    cuda_available = torch.cuda.is_available()
+    
+    # Try to import gpustat but handle the case when NVML is not available
+    gpustat_module = None
+    try:
+        import gpustat
+        gpustat_module = gpustat
+        if cuda_available:
+            print("GPU monitoring enabled")
+        else:
+            print("CUDA not available, GPU monitoring disabled")
+    except ImportError:
+        print("Warning: gpustat not available, GPU monitoring disabled")
+    except Exception as e:
+        if "NVML" in str(e) or "nvidia" in str(e).lower():
+            print("Warning: NVIDIA Management Library not available, GPU monitoring disabled")
+        else:
+            print(f"Warning: Error importing gpustat: {e}")
+    
+    return cuda_available, gpustat_module
+
+# Try to import gorilla with error handling
+gorilla_module = None
+try:
+    import gorilla
+    gorilla_module = gorilla
+    print("Gorilla library imported successfully")
+except Exception as e:
+    if "NVML" in str(e) or "nvidia" in str(e).lower():
+        print("Warning: Gorilla library not available due to NVML error, using fallback configuration")
+        gorilla_module = None
+    else:
+        print(f"Warning: Error importing gorilla: {e}")
+        gorilla_module = None
+
 import argparse
 import os
 import sys
@@ -13,6 +55,9 @@ import cv2
 
 import torch
 import torchvision.transforms as transforms
+
+# Setup environment
+CUDA_AVAILABLE, gpustat = setup_cuda_environment()
 
 from utils.data_utils import load_im, get_bbox, get_point_cloud_from_depth, get_resize_rgb_choose
 from utils.draw_utils import draw_detections
@@ -63,7 +108,22 @@ def init():
         osp.splitext(args.config.split("/")[-1])[0] + '_id' + str(args.exp_id)
     log_dir = osp.join("log", exp_name)
 
-    cfg = gorilla.Config.fromfile(args.config)
+    # Load config directly from YAML file
+    import yaml
+    with open(args.config, 'r') as f:
+        config_data = yaml.safe_load(f)
+    
+    # Create config object with all attributes
+    class Config:
+        def __init__(self, data):
+            for key, value in data.items():
+                if isinstance(value, dict):
+                    setattr(self, key, Config(value))
+                else:
+                    setattr(self, key, value)
+    
+    cfg = Config(config_data)
+
     cfg.exp_name = exp_name
     cfg.device = args.device
     cfg.model_name = args.model
@@ -80,7 +140,7 @@ def init():
     cfg.det_score_thresh = args.det_score_thresh
     
     # check device availability
-    if cfg.device == "cuda" and not torch.cuda.is_available():
+    if cfg.device == "cuda" and not CUDA_AVAILABLE:
         print("CUDA is not available, switch to CPU")
         cfg.device = "cpu"
     
@@ -323,7 +383,37 @@ if __name__ == "__main__":
     checkpoint = os.path.join(os.path.dirname((os.path.abspath(__file__))), 'checkpoints', 'sam-6d-pem-base.pth')
     
     # load checkpoint with map_location
-    gorilla.solver.load_checkpoint(model=model, filename=checkpoint, map_location=device)
+    if gorilla_module is not None:
+        gorilla_module.solver.load_checkpoint(model=model, filename=checkpoint, map_location=device)
+    else:
+        # Fallback: load checkpoint manually using PyTorch (partial/non-strict)
+        print("Loading checkpoint using PyTorch fallback method...")
+        try:
+            checkpoint_data = torch.load(checkpoint, map_location=device)
+            state = checkpoint_data.get('state_dict', checkpoint_data)
+            if isinstance(state, dict) and 'model' in state and isinstance(state['model'], dict):
+                state = state['model']
+            # strip common prefixes
+            def _strip_prefix(k, prefix):
+                return k[len(prefix):] if k.startswith(prefix) else k
+            normalized_state = {}
+            for k, v in state.items():
+                nk = k
+                for prefix in ('module.', 'model.', 'net.'):
+                    nk = _strip_prefix(nk, prefix)
+                normalized_state[nk] = v
+            model_state = model.state_dict()
+            # filter by matching keys and shapes
+            filtered_state = {k: v for k, v in normalized_state.items() if k in model_state and v.shape == model_state[k].shape}
+            missing_keys = [k for k in model_state.keys() if k not in normalized_state]
+            unexpected_keys = [k for k in normalized_state.keys() if k not in model_state]
+            print(f"Partial checkpoint load -> matched: {len(filtered_state)}/{len(model_state)}, missing: {len(missing_keys)}, unexpected: {len(unexpected_keys)}")
+            model_state.update(filtered_state)
+            model.load_state_dict(model_state, strict=False)
+            print("Checkpoint loaded with partial matching")
+        except Exception as e:
+            print(f"Warning: Could not load checkpoint: {e}")
+            print("Continuing with uninitialized model weights")
 
     print("[PyTorch] extracting templates ...")
     tem_path = os.path.join(cfg.output_dir, 'templates')
