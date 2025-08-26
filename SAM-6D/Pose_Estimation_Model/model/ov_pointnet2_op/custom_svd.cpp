@@ -102,9 +102,7 @@ void ensure_svd_signs(Eigen::MatrixXf& U, Eigen::VectorXf& S, Eigen::MatrixXf& V
 //! [op:evaluate]
 bool CustomSVD::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inputs) const {
     if (DEBUG_FLAG){
-        if (get_global_id(0) == 0 && get_global_id(1) == 0 && get_global_id(2) == 0 ){
-            printf("======== [GPU ov_custom_svd] ======== \n");
-        }
+        printf("======== [CPU ov_custom_svd] ======== \n");
     }
     // Support batch SVD, input shape: [batch..., M, N]
     const auto& in = inputs[0];
