@@ -5,6 +5,7 @@
 // #ifndef TOLERANCE
 // #define TOLERANCE 1e-8f
 // #endif
+#define DEBUG_FLAG false
 
 __kernel void ov_custom_svd_v(
     __global const INPUT0_TYPE* input,   // (B, M, N) row-major
@@ -15,7 +16,13 @@ __kernel void ov_custom_svd_v(
     uint n = INPUT0_DIMS[2];  // matrix cols
     uint b = INPUT0_DIMS[0];  // batch size
     
-    if (batch_index >= b) return;
+    // if (batch_index >= b) return;
+    if (DEBUG_FLAG){
+        if (get_global_id(0) == 0 && get_global_id(1) == 0 && get_global_id(2) == 0 ){
+            printf("======== [GPU ov_custom_svd_v] ======== \n");
+            printf("b:%d, m:%d, n:%d",b, m, n);
+        }
+    }
     
     uint input_offset = batch_index * m * n;
     uint u_offset = batch_index * m * m;

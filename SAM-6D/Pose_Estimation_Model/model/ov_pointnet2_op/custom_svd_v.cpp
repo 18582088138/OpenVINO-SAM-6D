@@ -1,6 +1,7 @@
 // Copyright (C) 2018-2025 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
+#define DEBUG_FLAG false
 
 #include "custom_svd_v.hpp"
 #include <Eigen/Dense>
@@ -104,6 +105,9 @@ void ensure_svd_v_signs(Eigen::MatrixXf& U, Eigen::VectorXf& S, Eigen::MatrixXf&
 
 //! [op:evaluate]
 bool CustomSVDv::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inputs) const {
+    if (DEBUG_FLAG){
+      std::cout << "======== [CPU ov_custom_svd_v] ======== " << std::endl;
+    }
     // Support batch SVD, input shape: [batch..., M, N]
     const auto& in = inputs[0];
     auto shape = in.get_shape();
@@ -154,8 +158,8 @@ bool CustomSVDv::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inp
     }
     
     // Debug: print CustomSVDv outputs
-    const bool debug = false; // true / false
-    if (debug) {
+    // const bool debug = false; // true / false
+    if (DEBUG_FLAG) {
         std::cout << "[CustomSVDv Debug] U: ";
         std::cout << "\n[CustomSVDv Debug] V: ";
         std::cout << std::endl;

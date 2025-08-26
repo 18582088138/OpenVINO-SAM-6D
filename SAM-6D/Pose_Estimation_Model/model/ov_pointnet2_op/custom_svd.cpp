@@ -1,12 +1,14 @@
 // Copyright (C) 2018-2025 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
+#define DEBUG_FLAG false
 
 #include "custom_svd.hpp"
 #include <Eigen/Dense>
 #include <vector>
 #include <stdexcept>
 #include <cmath>
+#include <algorithm>
 
 using namespace TemplateExtension;
 
@@ -50,8 +52,6 @@ void CustomSVD::validate_and_infer_types() {
 
 //! [op:copy]
 std::shared_ptr<ov::Node> CustomSVD::clone_with_new_inputs(const ov::OutputVector& new_args) const {
-    // OPENVINO_ASSERT(new_args.size() == 2, "Incorrect number of new arguments");
-
     return std::make_shared<CustomSVD>(new_args.at(0));
 }
 //! [op:copy]
@@ -62,8 +62,50 @@ bool CustomSVD::visit_attributes(ov::AttributeVisitor& visitor) {
 }
 //! [op:visit_attributes]
 
+// Helper function to ensure proper SVD signs (similar to PyTorch)
+void ensure_svd_signs(Eigen::MatrixXf& U, Eigen::VectorXf& S, Eigen::MatrixXf& V) {
+    // Ensure singular values are non-negative and sorted in descending order
+    for (int i = 0; i < S.size(); ++i) {
+        if (S(i) < 0) {
+            S(i) = -S(i);
+            U.col(i) = -U.col(i);
+        }
+    }
+    
+    // Sort singular values in descending order
+    std::vector<std::pair<float, int>> s_indices;
+    for (int i = 0; i < S.size(); ++i) {
+        s_indices.push_back({S(i), i});
+    }
+    std::sort(s_indices.begin(), s_indices.end(), 
+              [](const std::pair<float, int>& a, const std::pair<float, int>& b) {
+                  return a.first > b.first;
+              });
+    
+    // Reorder U, S, V according to sorted singular values
+    Eigen::MatrixXf U_new = U;
+    Eigen::MatrixXf V_new = V;
+    Eigen::VectorXf S_new = S;
+    
+    for (int i = 0; i < S.size(); ++i) {
+        int old_idx = s_indices[i].second;
+        S_new(i) = s_indices[i].first;
+        U_new.col(i) = U.col(old_idx);
+        V_new.col(i) = V.col(old_idx);
+    }
+    
+    U = U_new;
+    S = S_new;
+    V = V_new;
+}
+
 //! [op:evaluate]
 bool CustomSVD::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inputs) const {
+    if (DEBUG_FLAG){
+        if (get_global_id(0) == 0 && get_global_id(1) == 0 && get_global_id(2) == 0 ){
+            printf("======== [GPU ov_custom_svd] ======== \n");
+        }
+    }
     // Support batch SVD, input shape: [batch..., M, N]
     const auto& in = inputs[0];
     auto shape = in.get_shape();
@@ -74,6 +116,7 @@ bool CustomSVD::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inpu
     size_t batch = 1;
     for (size_t i = 0; i < rank - 2; ++i) batch *= shape[i];
     const float* data = in.data<const float>();
+    
     // Output shape
     std::vector<size_t> u_shape = shape; u_shape[rank - 1] = m; // (batch..., M, M)
     std::vector<size_t> s_shape = shape; s_shape.pop_back(); s_shape[rank - 2] = std::min(m, n); // (batch..., min(M,N))
@@ -88,70 +131,33 @@ bool CustomSVD::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inpu
     size_t u_mat_size = m * m;
     size_t s_vec_size = std::min(m, n);
     size_t v_mat_size = n * n;
+    
     for (size_t b = 0; b < batch; ++b) {
         const float* batch_data = data + b * in_mat_size;
         Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> A(batch_data, m, n);
         
-        // Numerical stability check
-        Eigen::MatrixXf A_safe = A;
-        
-        // Check and clean NaN/Inf in the input matrix
-        for (int i = 0; i < A_safe.rows(); ++i) {
-            for (int j = 0; j < A_safe.cols(); ++j) {
-                if (std::isnan(A_safe(i,j)) || std::isinf(A_safe(i,j))) {
-                    A_safe(i,j) = 0.0f;
-                }
-            }
-        }
-        
-        // Use a more stable SVD setting
-        Eigen::JacobiSVD<Eigen::MatrixXf> svd(A_safe, Eigen::ComputeFullU | Eigen::ComputeFullV);
+        // Use Eigen's BDCSVD for better numerical stability (similar to LAPACK)
+        Eigen::BDCSVD<Eigen::MatrixXf> svd(A, Eigen::ComputeFullU | Eigen::ComputeFullV);
         
         // Get SVD results
         Eigen::MatrixXf U = svd.matrixU();
         Eigen::VectorXf S = svd.singularValues();
         Eigen::MatrixXf V = svd.matrixV();
         
-        // Numerical stability processing
-        // 1. Clean small values in singular values
-        float eps = 1e-8f;
-        for (int i = 0; i < S.size(); ++i) {
-            if (S(i) < eps) {
-                S(i) = eps;
-            }
-        }
-        
-        // 2. Ensure U and V are orthogonal
-        for (int i = 0; i < U.rows(); ++i) {
-            for (int j = 0; j < U.cols(); ++j) {
-                if (std::isnan(U(i,j)) || std::isinf(U(i,j))) {
-                    U(i,j) = (i == j) ? 1.0f : 0.0f;
-                }
-            }
-        }
-        
-        for (int i = 0; i < V.rows(); ++i) {
-            for (int j = 0; j < V.cols(); ++j) {
-                if (std::isnan(V(i,j)) || std::isinf(V(i,j))) {
-                    V(i,j) = (i == j) ? 1.0f : 0.0f;
-                }
-            }
-        }
+        // Ensure proper signs and ordering (similar to PyTorch)
+        ensure_svd_signs(U, S, V);
         
         // Write outputs
         Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>(u_data + b * u_mat_size, m, m) = U;
         Eigen::Map<Eigen::VectorXf>(s_data + b * s_vec_size, s_vec_size) = S;
         Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>(v_data + b * v_mat_size, n, n) = V;
     }
+    
     // Debug: print CustomSVD outputs
-    const bool debug = false; // true / false
-    if (debug) {
+    // const bool debug = false; // true / false
+    if (DEBUG_FLAG) {
         std::cout << "[CustomSVD Debug] U: ";
-        // for (size_t i = 0; i < batch * u_mat_size; ++i) std::cout << u_data[i] << ' ';
-        // std::cout << "\n[CustomSVD Debug] S: ";
-        // for (size_t i = 0; i < batch * s_vec_size; ++i) std::cout << s_data[i] << ' ';
         std::cout << "\n[CustomSVD Debug] V: ";
-        // for (size_t i = 0; i < batch * v_mat_size; ++i) std::cout << v_data[i] << ' ';
         std::cout << std::endl;
 
         FILE* fp = fopen("output/ov_svd.txt", "a");
@@ -163,8 +169,6 @@ bool CustomSVD::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inpu
             fprintf(fp, "----- ov custom_svd (U) -----\n");
             for (size_t i = 0; i < batch * u_mat_size; ++i) fprintf(fp, "%f ", u_data[i]);
             fprintf(fp, "\n");
-            // for (size_t i = 0; i < batch * s_vec_size; ++i) fprintf(fp, "%f ", s_data[i]);
-            // fprintf(fp, "\n");
             fprintf(fp, "----- ov custom_svd (V) -----\n");
             for (size_t i = 0; i < batch * v_mat_size; ++i) fprintf(fp, "%f ", v_data[i]);
             fprintf(fp, "\n");
@@ -172,7 +176,6 @@ bool CustomSVD::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inpu
         } else {
             std::cerr << "[CustomSVD Debug] Failed to open output/ov_svd.txt for writing!" << std::endl;
         }
-
     }
     
     return true;
