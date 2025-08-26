@@ -2,6 +2,7 @@
 // OpenCL kernel for matrix determinant computation
 // Optimized for batch processing of small matrices (1x1 to 4x4)
 // Supports larger matrices up to MAX_N x MAX_N
+#define DEBUG_FLAG false
 
 #ifndef MAX_N
 #define MAX_N 64
@@ -16,6 +17,11 @@ __kernel void ov_custom_det(
     uint b = INPUT0_DIMS[0];  // batch size
     
     if (batch_index >= b) return;
+    if (DEBUG_FLAG){
+        if (get_global_id(0) == 0 && get_global_id(1) == 0 && get_global_id(2) == 0 ){
+            printf("======== [GPU ov_custom_det] ======== \n");
+        } 
+    }
     
     uint input_offset = batch_index * n * n;
     uint output_offset = batch_index;

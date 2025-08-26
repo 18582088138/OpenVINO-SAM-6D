@@ -1,6 +1,7 @@
 // Copyright (C) 2018-2025 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
+#define DEBUG_FLAG false
 
 #include "custom_det.hpp"
 #include <Eigen/Dense>
@@ -49,6 +50,9 @@ bool CustomDet::visit_attributes(ov::AttributeVisitor& visitor) {
 
 //! [op:evaluate]
 bool CustomDet::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inputs) const {
+    if (DEBUG_FLAG){
+      std::cout << "======== [CPU ov_custom_det] ======== " << std::endl;
+    }
     const auto& in = inputs[0];
     auto shape = in.get_shape();
     if (shape.size() != 3 || shape[1] != shape[2])
@@ -69,8 +73,8 @@ bool CustomDet::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inpu
         out_data[b] = A.determinant();
     }
     // Debug: print CustomDet out_data
-    const bool debug = false; // true / false
-    if (debug) {
+    // const bool debug = false; // true / false
+    if (DEBUG_FLAG) {
         std::cout << "[CustomDet Debug] out_data: ";
         FILE* fp = fopen("output/ov_det.txt", "a");
         if (fp) {
