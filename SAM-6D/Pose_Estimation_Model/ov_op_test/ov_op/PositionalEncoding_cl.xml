@@ -1,0 +1,41 @@
+<CustomLayer name="BallQuery" type="SimpleGPU" version="1">
+    <Kernel entry="ov_ball_query">
+        <Source filename="ball_query.cl"/>
+        <Define name="nsample" type="int"   param="nsample"/>
+        <Define name="radius"  type="float" param="radius"/>
+    </Kernel>
+    <Buffers><!-- use the same order as the kernel entry function, so in this case (input0,input1,output0,int,float,weights) -->
+        <Tensor arg-index="0" type="input" port-index="0" />   <!-- new_xyz (B, npoint, 3) --> 
+        <Tensor arg-index="1" type="input" port-index="1" />                <!-- xyz (B, n, 3) -->                 
+        <Tensor arg-index="2" type="output" port-index="0" format="BFYX"/>                <!-- idx (B, npoint, nsample) -->                 
+    </Buffers>
+    <CompilerOptions options="-cl-mad-enable"/>
+    <WorkSizes global="B,F,1" local="1,64,1"/>
+</CustomLayer>
+
+<CustomLayer name="GroupingOperation" type="SimpleGPU" version="1">
+    <Kernel entry="grouping_operation">
+        <Source filename="grouping_operation.cl" />
+    </Kernel>
+    <Buffers>
+        <Tensor arg-index="0" type="input" port-index="0" />
+        <Tensor arg-index="1" type="input" port-index="1" />
+        <Tensor arg-index="2" type="output" port-index="0" format="BFYX" />
+    </Buffers>
+    <CompilerOptions options="-cl-mad-enable -cl-fast-relaxed-math -cl-no-signed-zeros -cl-unsafe-math-optimizations" />
+    <WorkSizes global="B*F*Y*X,1,1" /> 
+</CustomLayer>
+
+<CustomLayer name="CustomDebugNode" type="SimpleGPU" version="1">
+    <Kernel entry="custom_debug_node">
+        <Source filename="custom_debug_node.cl"/>
+    </Kernel>
+    <Buffers>
+        <Tensor arg-index="0" type="input"  port-index="0"/>  <!-- input -->
+        <Tensor arg-index="1" type="output" port-index="0"/>  <!-- output -->
+    </Buffers>
+    <CompilerOptions options="-cl-mad-enable -cl-no-signed-zeros -cl-unsafe-math-optimizations"/>
+    <!-- Run one work-item per element to preserve linear order copy.
+         Only gid==0 prints, so printing顺序稳定 -->
+    <WorkSizes global="B*F*Y*X,1,1" local="1,1,1"/>
+</CustomLayer>
