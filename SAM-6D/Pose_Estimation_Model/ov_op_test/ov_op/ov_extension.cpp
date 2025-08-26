@@ -5,6 +5,7 @@
 #include "custom_op.hpp"
 
 #include "ball_query.hpp"
+
 #include "custom_det.hpp"
 
 #include "custom_svd.hpp"
@@ -12,8 +13,12 @@
 #include "custom_svd_v.hpp"
 
 #include "furthest_point_sampling.hpp"
+#include "furthest_point_sampling_2.hpp"
+
 #include "gather_operation.hpp"
 #include "grouping_operation.hpp"
+
+#include "custom_debug_node.hpp"
 
 // clang-format off
 //! [ov_extension:entry_point]
@@ -40,11 +45,17 @@ OPENVINO_CREATE_EXTENSIONS(
         std::make_shared<ov::OpExtension<TemplateExtension::FurthestPointSampling>>(),
         std::make_shared<ov::frontend::OpExtension<TemplateExtension::FurthestPointSampling>>(),
 
+        std::make_shared<ov::OpExtension<TemplateExtension::FurthestPointSampling2>>(),
+        std::make_shared<ov::frontend::OpExtension<TemplateExtension::FurthestPointSampling2>>(),
+
         std::make_shared<ov::OpExtension<TemplateExtension::GatherOperation>>(),
         std::make_shared<ov::frontend::OpExtension<TemplateExtension::GatherOperation>>(),
 
         std::make_shared<ov::OpExtension<TemplateExtension::GroupingOperation>>(),
         std::make_shared<ov::frontend::OpExtension<TemplateExtension::GroupingOperation>>(),
+
+        std::make_shared<ov::OpExtension<TemplateExtension::CustomDebugNode>>(),
+        std::make_shared<ov::frontend::OpExtension<TemplateExtension::CustomDebugNode>>(),
 
     }));
 //! [ov_extension:entry_point]

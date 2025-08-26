@@ -1,19 +1,19 @@
 #define DEBUG_FLAG false
 
-#include "furthest_point_sampling.hpp"
+#include "furthest_point_sampling_2.hpp"
 #include "openvino/op/constant.hpp"
 
 using namespace TemplateExtension;
 
 //! [op:ctor]
-FurthestPointSampling::FurthestPointSampling(const ov::Output<ov::Node>& xyz, const ov::Output<ov::Node>& npoint) 
+FurthestPointSampling2::FurthestPointSampling2(const ov::Output<ov::Node>& xyz, const ov::Output<ov::Node>& npoint) 
 : Op({xyz, npoint}) {
     constructor_validate_and_infer_types();
 }
 //! [op:ctor]
 
 //! [op:validate]
-void FurthestPointSampling::validate_and_infer_types() {
+void FurthestPointSampling2::validate_and_infer_types() {
     // Operation doesn't change shapes end element type
     /*
     Parameters
@@ -39,22 +39,22 @@ void FurthestPointSampling::validate_and_infer_types() {
 //! [op:validate]
 
 //! [op:copy]
-std::shared_ptr<ov::Node> FurthestPointSampling::clone_with_new_inputs(const ov::OutputVector& new_args) const {
+std::shared_ptr<ov::Node> FurthestPointSampling2::clone_with_new_inputs(const ov::OutputVector& new_args) const {
     // OPENVINO_ASSERT(new_args.size() == 2, "Incorrect number of new arguments");
-    return std::make_shared<FurthestPointSampling>(new_args.at(0), new_args.at(1));
+    return std::make_shared<FurthestPointSampling2>(new_args.at(0), new_args.at(1));
 }
 //! [op:copy]
 
 //! [op:visit_attributes]
-bool FurthestPointSampling::visit_attributes(ov::AttributeVisitor& visitor) {
+bool FurthestPointSampling2::visit_attributes(ov::AttributeVisitor& visitor) {
     return true;
 }
 //! [op:visit_attributes]
 
 //! [op:evaluate]
-bool FurthestPointSampling::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inputs) const {
+bool FurthestPointSampling2::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inputs) const {
     if (DEBUG_FLAG){
-        std::cout<<"======== [CPU ov_furthest_point_sampling 2 input] ========" <<std::endl;
+      std::cout << "======== [CPU furthest_point_sampling 2 input] ======== " << std::endl;
     }
     const float* xyz = inputs[0].data<const float>();
     // const int npoint = *inputs[1].data<const int>();
@@ -112,10 +112,10 @@ bool FurthestPointSampling::evaluate(ov::TensorVector& outputs, const ov::Tensor
         }
     }
 
-    // Debug: print FurthestPointSampling out_tensor
+    // Debug: print FurthestPointSampling2 out_tensor
     const bool debug = false; // true / false
     if (debug) {
-        std::cout << "[FurthestPointSampling Debug] out_tensor: ";
+        std::cout << "[FurthestPointSampling2 Debug] out_tensor: ";
         int total = b * npoint;
         int* out_ptr = out_data;
         // for (int i = 0; i < total; ++i) {
@@ -133,7 +133,7 @@ bool FurthestPointSampling::evaluate(ov::TensorVector& outputs, const ov::Tensor
             fprintf(fp, "\n");
             fclose(fp);
         } else {
-            std::cerr << "[FurthestPointSampling Debug] Failed to open output/ov_furthest_point_sampling.txt for writing!" << std::endl;
+            std::cerr << "[FurthestPointSampling2 Debug] Failed to open output/ov_furthest_point_sampling.txt for writing!" << std::endl;
         }
     }
     // out.set_shape(in.get_shape());
@@ -141,7 +141,7 @@ bool FurthestPointSampling::evaluate(ov::TensorVector& outputs, const ov::Tensor
     return true;
 }
 
-bool FurthestPointSampling::has_evaluate() const {
+bool FurthestPointSampling2::has_evaluate() const {
     return true;
 }
 //! [op:evaluate]

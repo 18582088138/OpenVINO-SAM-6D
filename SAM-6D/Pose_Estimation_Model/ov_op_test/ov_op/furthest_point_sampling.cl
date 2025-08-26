@@ -1,6 +1,8 @@
 // furthest_point_sampling_xkd.cl
 // OpenCL kernel for furthest point sampling operation
 // Matches C++ implementation (sequential per batch, min-distance to selected set)
+#define MAX_ELEMS 2048
+#define DEBUG_FLAG false
 
 __kernel void ov_furthest_point_sampling(
     __global const float* pts,           // (B, N, 3) input points
@@ -16,6 +18,12 @@ __kernel void ov_furthest_point_sampling(
         return;
     }
 
+    if (DEBUG_FLAG){
+        if (get_global_id(0) == 0 && get_global_id(1) == 0 && get_global_id(2) == 0 ){
+            printf("======== [GPU furthest_point_sampling] ======== \n");
+        } 
+    }
+
     uint pts_offset = batch_index * N * 3;
     uint output_offset = batch_index * npoint;
 
@@ -27,7 +35,7 @@ __kernel void ov_furthest_point_sampling(
     // Using private memory (__private/local array) - size must be known at compile time or use __local with dynamic allocation if supported and handled by host
     // For simplicity and assuming N is not too large, we use private array here.
     // If N is very large, __local memory with reduction techniques would be needed.
-    float temp[2048]; // This might cause issues if N is too large for private memory
+    float temp[MAX_ELEMS]; // This might cause issues if N is too large for private memory
 
     // Initialize temp array to maximum value
     for (int i = 0; i < N; ++i) {

@@ -1,3 +1,5 @@
+#define DEBUG_FLAG false
+
 #include "furthest_point_sampling.hpp"
 #include "openvino/op/constant.hpp"
 
@@ -50,6 +52,9 @@ bool FurthestPointSampling::visit_attributes(ov::AttributeVisitor& visitor) {
 
 //! [op:evaluate]
 bool FurthestPointSampling::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inputs) const {
+    if (DEBUG_FLAG){
+      std::cout << "======== [CPU furthest_point_sampling] ======== " << std::endl;
+    }
     const float* xyz = inputs[0].data<const float>();
     // const int npoint = *inputs[1].data<const int>();
     int npoint = m_npoint;
@@ -107,8 +112,8 @@ bool FurthestPointSampling::evaluate(ov::TensorVector& outputs, const ov::Tensor
     }
 
     // Debug: print FurthestPointSampling out_tensor
-    const bool debug = false; // true / false
-    if (debug) {
+    // const bool debug = false; // true / false
+    if (DEBUG_FLAG) {
         std::cout << "[FurthestPointSampling Debug] out_tensor: ";
         int total = b * npoint;
         int* out_ptr = out_data;

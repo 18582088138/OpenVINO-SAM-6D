@@ -1,6 +1,6 @@
-<CustomLayer name="FurthestPointSampling" type="SimpleGPU" version="1">
-    <Kernel entry="ov_furthest_point_sampling">
-        <Source filename="furthest_point_sampling.cl"/>
+<CustomLayer name="FurthestPointSampling2" type="SimpleGPU" version="1">
+    <Kernel entry="ov_furthest_point_sampling2">
+        <Source filename="furthest_point_sampling_2.cl"/>
         <!-- <Source filename="furthest_point_sampling_optimized.cl"/> -->
         <!-- <Define name="npoint" type="int"   param="npoint"/> -->
     </Kernel>
