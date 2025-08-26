@@ -19,7 +19,7 @@ __kernel void ov_ball_query(
 
     if (DEBUG_FLAG){
         if (get_global_id(0) == 0 && get_global_id(1) == 0 && get_global_id(2) == 0 ){
-            printf("======== [ov_ball_query] ======== \n");
+            printf("======== [GPU ov_ball_query] ======== \n");
             printf("batch_index: %d, point_index: %d, sample_index:%d \n",batch_index, point_index, sample_index);
         } 
     }
