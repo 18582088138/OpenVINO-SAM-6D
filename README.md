@@ -107,6 +107,19 @@ Currently the refactor PEM model only supports model inference, not model traini
 If you need to retrain a model, pls use the original [SAM6D repository](https://github.com/JiehongLin/SAM-6D/tree/main).
 This script will be removed in the future.
 
+## OV Enable Summary
+SAM6D GPU E2E pipeline encounters obstacles using GPU Custom OP
+
+- When two GPU Custom OPs consecutive in a model, the calculation results may be incorrect. (This may be a bug in the GPU extension, have reported it to the ODT team)
+
+- The GPU pipeline model graph is significantly different from the CPU graph. (This may be related to the GPU extension mechanism.)
+
+- GPU E2E pipeline inference, will encounter null pointer and CL_OUT_OF_RESOURCES problems.
+
+Overall, models like the SAM6D, which contain a large number of custom ops, are not suitable for enabling via GPU extensions.
+
+[**Next step**], the custom ops should be **registered as the opset in OpenVINO source code** and deliver custom OpenVINO package with custom op patch.
+
 
 ## Citation
 If you find our work useful in your research, please consider citing:
