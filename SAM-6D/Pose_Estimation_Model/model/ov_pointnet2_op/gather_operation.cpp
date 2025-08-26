@@ -1,6 +1,7 @@
 // Copyright (C) 2018-2025 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 //
+#define DEBUG_FLAG false
 
 #include "gather_operation.hpp"
 #include <cmath>
@@ -56,6 +57,9 @@ bool GatherOperation::visit_attributes(ov::AttributeVisitor& visitor) {
 
 //! [op:evaluate]
 bool GatherOperation::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inputs) const {
+    if (DEBUG_FLAG){
+        std::cout<<"======== [CPU ov_gather_operation] ========" <<std::endl;
+    }
     const float* features = inputs[0].data<const float>();
     const int* idx = inputs[1].data<const int>();
 
@@ -102,8 +106,8 @@ bool GatherOperation::evaluate(ov::TensorVector& outputs, const ov::TensorVector
     }
     
     // Debug: record input data
-    const bool debug = false; // true / false
-    if (debug) {
+    // const bool debug = false; // true / false
+    if (DEBUG_FLAG) {
         // record features input data
         int features_total = b * c * n;
         FILE* fp_features = fopen("output/ov_gather_operation_input.txt", "a");

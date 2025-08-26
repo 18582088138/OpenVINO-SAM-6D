@@ -1,3 +1,5 @@
+#define DEBUG_FLAG false
+
 __kernel void gather_operation(
 	__global const float* features,  // (B, C, N)
 	__global const int* idx,         // (B, NPOINT)
@@ -12,6 +14,11 @@ __kernel void gather_operation(
 
 	int total = B * C * NPOINT;
 	if (gid >= total) return;
+	if (DEBUG_FLAG){
+		if (get_global_id(0) == 0 && get_global_id(1) == 0 && get_global_id(2) == 0 ){
+			printf("======== [GPU gather_operation] ======== \n");
+		} 
+	}
 
 	int j = gid % NPOINT;                 // point index within npoints
 	int l = (gid / NPOINT) % C;           // channel index
