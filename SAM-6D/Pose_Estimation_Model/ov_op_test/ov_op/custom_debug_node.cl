@@ -4,6 +4,7 @@
 
 #define MAX_PRINT_ELEMS 200
 #define DEBUG_FLAG false
+
 __kernel void custom_debug_node(
     __global const INPUT0_TYPE* in,   // Any shape
     __global OUTPUT0_TYPE* out        // Same shape as input

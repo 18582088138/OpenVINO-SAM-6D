@@ -10,6 +10,8 @@
 #include "ball_query.hpp"
 #include "grouping_operation.hpp"
 #include "custom_svd.hpp"
+#include "custom_svd_u.hpp"
+#include "custom_svd_v.hpp"
 #include "custom_det.hpp"
 #include "custom_searchsorted.hpp"
 #include "custom_debug_node.hpp"
@@ -43,6 +45,12 @@ OPENVINO_CREATE_EXTENSIONS(
 
         std::make_shared<ov::OpExtension<TemplateExtension::CustomSVD>>(),
         std::make_shared<ov::frontend::OpExtension<TemplateExtension::CustomSVD>>(),
+
+        std::make_shared<ov::OpExtension<TemplateExtension::CustomSVDu>>(),
+        std::make_shared<ov::frontend::OpExtension<TemplateExtension::CustomSVDu>>(),
+
+        std::make_shared<ov::OpExtension<TemplateExtension::CustomSVDv>>(),
+        std::make_shared<ov::frontend::OpExtension<TemplateExtension::CustomSVDv>>(),
 
         std::make_shared<ov::OpExtension<TemplateExtension::CustomDet>>(),
         std::make_shared<ov::frontend::OpExtension<TemplateExtension::CustomDet>>(),
