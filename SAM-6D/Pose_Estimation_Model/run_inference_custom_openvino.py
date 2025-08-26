@@ -1,21 +1,69 @@
-import gorilla
+# Suppress NVML errors when CUDA is not available
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+
+# Environment setup for CUDA compatibility
+def setup_cuda_environment():
+    """Setup CUDA environment and handle NVML errors gracefully"""
+    # Check CUDA availability
+    cuda_available = torch.cuda.is_available()
+    
+    # Try to import gpustat but handle the case when NVML is not available
+    gpustat_module = None
+    try:
+        import gpustat
+        gpustat_module = gpustat
+        if cuda_available:
+            print("GPU monitoring enabled")
+        else:
+            print("CUDA not available, GPU monitoring disabled")
+    except ImportError:
+        print("Warning: gpustat not available, GPU monitoring disabled")
+    except Exception as e:
+        if "NVML" in str(e) or "nvidia" in str(e).lower():
+            print("Warning: NVIDIA Management Library not available, GPU monitoring disabled")
+        else:
+            print(f"Warning: Error importing gpustat: {e}")
+    
+    return cuda_available, gpustat_module
+
+# Try to import gorilla with error handling
+gorilla_module = None
+try:
+    import gorilla
+    gorilla_module = gorilla
+    print("Gorilla library imported successfully")
+except Exception as e:
+    if "NVML" in str(e) or "nvidia" in str(e).lower():
+        print("Warning: Gorilla library not available due to NVML error, using fallback configuration")
+        gorilla_module = None
+    else:
+        print(f"Warning: Error importing gorilla: {e}")
+        gorilla_module = None
+
 import argparse
 import os
 import sys
 from PIL import Image
 import os.path as osp
 import numpy as np
+import random
+import importlib
 import time
 import json
 import cv2
 
+import torch
 from openvino import Core
 
-import pycocotools.mask as cocomask
-import trimesh
+# Setup environment
+CUDA_AVAILABLE, gpustat = setup_cuda_environment()
 
 from utils.data_utils import load_im, get_bbox, get_point_cloud_from_depth, get_resize_rgb_choose
 from utils.draw_utils import draw_detections
+
+import pycocotools.mask as cocomask
+import trimesh
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -28,7 +76,7 @@ sys.path.append(os.path.join(BASE_DIR, 'model', 'pointnet2'))
 def get_parser():
     parser = argparse.ArgumentParser(description="[OpenVINO] Pose Estimation (CPU Version)")
     # pem
-    parser.add_argument("--device", type=str, default="cpu", help="device to run on (cpu/cuda)")
+    parser.add_argument("--device", type=str, default="CPU", help="device to run on (CPU/GPU)")
     parser.add_argument("--model" , type=str, default="pose_estimation_model", help="path to model file")
     parser.add_argument("--config", type=str, default="config/base.yaml", help="path to config file, different config.yaml use different config")
     parser.add_argument("--iter"  , type=int, default=600000, help="epoch num. for testing")
@@ -61,7 +109,22 @@ def init():
         osp.splitext(args.config.split("/")[-1])[0] + '_id' + str(args.exp_id)
     log_dir = osp.join("log", exp_name)
 
-    cfg = gorilla.Config.fromfile(args.config)
+    # Load config directly from YAML file
+    import yaml
+    with open(args.config, 'r') as f:
+        config_data = yaml.safe_load(f)
+    
+    # Create config object with all attributes
+    class Config:
+        def __init__(self, data):
+            for key, value in data.items():
+                if isinstance(value, dict):
+                    setattr(self, key, Config(value))
+                else:
+                    setattr(self, key, value)
+    
+    cfg = Config(config_data)
+
     cfg.exp_name = exp_name
     cfg.device = args.device
     cfg.model_name = args.model
@@ -320,18 +383,23 @@ def main():
 
     # ov init
     core = Core()
-    ov_pem_model_path = "model_save/ov_pem_model_cpu.xml"
-    ov_fe_model_path = "model_save/ov_fe_model_cpu.xml"
+    ov_pem_model_path = "model_save/ov_pem_model.xml"
+    ov_fe_model_path = "model_save/ov_fe_model.xml"
+    ov_gpu_kernel_path = "./model/ov_pointnet2_op/ov_gpu_custom_op.xml"
     ov_extension_lib_path = "./model/ov_pointnet2_op/build/libopenvino_operation_extension.so"
     core.add_extension(ov_extension_lib_path)
+
+    if cfg.device == "GPU":
+        core.set_property("GPU", {"INFERENCE_PRECISION_HINT": "f32"})
+        core.set_property("GPU", {"CONFIG_FILE": ov_gpu_kernel_path})
 
     # ov load models
     ov_pem_model = core.read_model(ov_pem_model_path)
     ov_fe_model = core.read_model(ov_fe_model_path)
 
-    ov_pem_compiled_model = core.compile_model(ov_pem_model, 'CPU')
-    ov_fe_compiled_model = core.compile_model(ov_fe_model, 'CPU')
-
+    ov_fe_compiled_model = core.compile_model(ov_fe_model, cfg.device)
+    ov_pem_compiled_model = core.compile_model(ov_pem_model, cfg.device)
+    
     print("[OpenVINO] extracting templates ...")
     tem_path = os.path.join(cfg.output_dir, 'templates')
     all_tem, all_tem_pts, all_tem_choose = get_templates_np(tem_path, cfg.test_dataset)
@@ -349,7 +417,7 @@ def main():
     }
 
     # Warm up
-    feature_results = ov_fe_compiled_model(feature_inputs)
+    # feature_results = ov_fe_compiled_model(feature_inputs)
 
     # OV feature extraction inference
     time_start = time.time()
@@ -382,7 +450,7 @@ def main():
         }
 
     # Warm up
-    results = ov_pem_compiled_model(ov_pem_inputs)
+    # results = ov_pem_compiled_model(ov_pem_inputs)
 
     # OV pose estimation inference
     print("[OpenVINO] running model ...")
