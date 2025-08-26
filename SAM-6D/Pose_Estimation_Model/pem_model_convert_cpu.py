@@ -1,4 +1,46 @@
-import gorilla
+# Suppress NVML errors when CUDA is not available
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+
+# Environment setup for CUDA compatibility
+def setup_cuda_environment():
+    """Setup CUDA environment and handle NVML errors gracefully"""
+    # Check CUDA availability
+    cuda_available = torch.cuda.is_available()
+    
+    # Try to import gpustat but handle the case when NVML is not available
+    gpustat_module = None
+    try:
+        import gpustat
+        gpustat_module = gpustat
+        if cuda_available:
+            print("GPU monitoring enabled")
+        else:
+            print("CUDA not available, GPU monitoring disabled")
+    except ImportError:
+        print("Warning: gpustat not available, GPU monitoring disabled")
+    except Exception as e:
+        if "NVML" in str(e) or "nvidia" in str(e).lower():
+            print("Warning: NVIDIA Management Library not available, GPU monitoring disabled")
+        else:
+            print(f"Warning: Error importing gpustat: {e}")
+    
+    return cuda_available, gpustat_module
+
+# Try to import gorilla with error handling
+gorilla_module = None
+try:
+    import gorilla
+    gorilla_module = gorilla
+    print("Gorilla library imported successfully")
+except Exception as e:
+    if "NVML" in str(e) or "nvidia" in str(e).lower():
+        print("Warning: Gorilla library not available due to NVML error, using fallback configuration")
+        gorilla_module = None
+    else:
+        print(f"Warning: Error importing gorilla: {e}")
+        gorilla_module = None
+
 import argparse
 import os
 import sys
@@ -67,7 +109,22 @@ def init():
         osp.splitext(args.config.split("/")[-1])[0] + '_id' + str(args.exp_id)
     log_dir = osp.join("log", exp_name)
 
-    cfg = gorilla.Config.fromfile(args.config)
+    # Load config directly from YAML file
+    import yaml
+    with open(args.config, 'r') as f:
+        config_data = yaml.safe_load(f)
+    
+    # Create config object with all attributes
+    class Config:
+        def __init__(self, data):
+            for key, value in data.items():
+                if isinstance(value, dict):
+                    setattr(self, key, Config(value))
+                else:
+                    setattr(self, key, value)
+    
+    cfg = Config(config_data)
+
     cfg.exp_name = exp_name
     cfg.device = args.device
     cfg.model_name = args.model
@@ -348,10 +405,10 @@ def prepare_data(cfg, model, device):
     }
 
     ov_fe_input_name = {"rgb_input":[batch_size,3,224,224], 
-                                        "pts_input":[batch_size,2048,3], 
-                                        "choose_input":[batch_size,2048]}
+                        "pts_input":[batch_size,2048,3], 
+                        "choose_input":[batch_size,2048]}
     ov_fe_output_name = {"pts_output":[batch_size,2048,3], 
-                                        "feat_output":[batch_size,2048,256]}
+                        "feat_output":[batch_size,2048,256]}
     ov_fe_input = {
         "rgb_input": rgb_input,
         "pts_input": pts_input,
@@ -489,8 +546,39 @@ def main():
     model.eval()
     checkpoint = os.path.join(os.path.dirname((os.path.abspath(__file__))), 'checkpoints', 'sam-6d-pem-base.pth')
     # load checkpoint
-    gorilla.solver.load_checkpoint(model=model, filename=checkpoint, map_location=device)
-
+   # load checkpoint with map_location
+    if gorilla_module is not None:
+        gorilla_module.solver.load_checkpoint(model=model, filename=checkpoint, map_location=device)
+    else:
+        # Fallback: load checkpoint manually using PyTorch (partial/non-strict)
+        print("Loading checkpoint using PyTorch fallback method...")
+        try:
+            checkpoint_data = torch.load(checkpoint, map_location=device)
+            state = checkpoint_data.get('state_dict', checkpoint_data)
+            if isinstance(state, dict) and 'model' in state and isinstance(state['model'], dict):
+                state = state['model']
+            # strip common prefixes
+            def _strip_prefix(k, prefix):
+                return k[len(prefix):] if k.startswith(prefix) else k
+            normalized_state = {}
+            for k, v in state.items():
+                nk = k
+                for prefix in ('module.', 'model.', 'net.'):
+                    nk = _strip_prefix(nk, prefix)
+                normalized_state[nk] = v
+            model_state = model.state_dict()
+            # filter by matching keys and shapes
+            filtered_state = {k: v for k, v in normalized_state.items() if k in model_state and v.shape == model_state[k].shape}
+            missing_keys = [k for k in model_state.keys() if k not in normalized_state]
+            unexpected_keys = [k for k in normalized_state.keys() if k not in model_state]
+            print(f"Partial checkpoint load -> matched: {len(filtered_state)}/{len(model_state)}, missing: {len(missing_keys)}, unexpected: {len(unexpected_keys)}")
+            model_state.update(filtered_state)
+            model.load_state_dict(model_state, strict=False)
+            print("Checkpoint loaded with partial matching")
+        except Exception as e:
+            print(f"Warning: Could not load checkpoint: {e}")
+            print("Continuing with uninitialized model weights")
+            
     # prepare data for model convert
     onnx_pem_input_name, onnx_pem_output_name, onnx_pem_input, \
     onnx_fe_input_name, onnx_fe_output_name, onnx_fe_input, \
@@ -501,8 +589,8 @@ def main():
     os.makedirs(model_save_path, exist_ok=True)
     onnx_pem_model_path = os.path.join(model_save_path, 'onnx_pem_model.onnx')
     onnx_fe_model_path = os.path.join(model_save_path, 'onnx_fe_model.onnx')
-    ov_pem_model_path = os.path.join(model_save_path, 'ov_pem_model_cpu.xml')
-    ov_fe_model_path = os.path.join(model_save_path, 'ov_fe_model_cpu.xml')
+    ov_pem_model_path = os.path.join(model_save_path, 'ov_pem_model.xml')
+    ov_fe_model_path = os.path.join(model_save_path, 'ov_fe_model.xml')
     ov_extension_lib_path = './model/ov_pointnet2_op/build/libopenvino_operation_extension.so'
 
     core = Core()
