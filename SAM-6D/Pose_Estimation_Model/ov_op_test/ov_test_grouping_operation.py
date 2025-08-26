@@ -56,14 +56,25 @@ class MyModel(nn.Module):
 
 
 def get_input_data():
-    dummy_features = torch.randn(DUMMY_B, DUMMY_C, DUMMY_N, dtype=torch.float32)
-    dummy_idx = torch.randint(0, DUMMY_N, (DUMMY_B, DUMMY_NPOINT, DUMMY_NSAMPLE), dtype=torch.int32)
-    dummy_idx = dummy_idx.to(torch.int32)
+    real_features_data_path ="output/grouping_features.npy"
+    real_idx_data_path = "output/grouping_idx.npy"
+    if not (os.path.exists(real_features_data_path) or os.path.exists(real_idx_data_path)):
+        dummy_features = torch.randn(DUMMY_B, DUMMY_C, DUMMY_N, dtype=torch.float32)
+        dummy_idx = torch.randint(0, DUMMY_N, (DUMMY_B, DUMMY_NPOINT, DUMMY_NSAMPLE), dtype=torch.int32)
+        features_data = dummy_features
+        idx_data = dummy_idx.to(torch.int32)
+    else:
+        real_features = np.load(real_features_data_path)
+        features_data = torch.from_numpy(real_features)
 
-    onnx_input = (dummy_features, dummy_idx)
+        real_idx = np.load(real_idx_data_path)
+        idx_data = torch.from_numpy(real_idx)
+        print(f"Loading Real data {real_features_data_path} & {real_idx_data_path} ")
+
+    onnx_input = (features_data, idx_data)
     onnx_input_name = ["features", "idx"]
 
-    ov_input = {"features": dummy_features.numpy(), "idx": dummy_idx.numpy()}
+    ov_input = {"features": features_data, "idx": idx_data}
     ov_input_name = {"features": [DUMMY_B, DUMMY_C, DUMMY_N],
                      "idx": [DUMMY_B, DUMMY_NPOINT, DUMMY_NSAMPLE]}
 

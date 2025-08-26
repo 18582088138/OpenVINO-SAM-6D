@@ -1,3 +1,4 @@
+#define DEBUG_FLAG false
 
 __kernel void grouping_operation(
     __global const INPUT0_TYPE* points,    // (B, C, N)
@@ -17,6 +18,11 @@ __kernel void grouping_operation(
 
     // 计算当前工作组处理的 total_threads（可选，用于循环处理更多数据）
     int total_threads = get_num_groups(0) * get_local_size(0);
+    if (DEBUG_FLAG){
+        if (get_global_id(0) == 0 && get_global_id(1) == 0 && get_global_id(2) == 0 ){
+            printf("======== [GPU grouping_operation] ======== \n");
+        } 
+    }
 
     int B = INPUT0_DIMS[0];
     int C = INPUT0_DIMS[1];

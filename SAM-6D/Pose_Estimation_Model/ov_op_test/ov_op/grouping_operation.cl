@@ -1,10 +1,11 @@
+#define DEBUG_FLAG false
 
 __kernel void grouping_operation(
     __global const INPUT0_TYPE* points,    // (B, C, N)
     __global const INPUT1_TYPE* idx,         // (B, NPOINT, NSAMPLE)
     __global OUTPUT0_TYPE* out              // (B, C, NPOINT, NSAMPLE)
 ) {
-    // 获取当前工作组（Work-group）的 ID，对应 CUDA 的 blockIdx.x
+    // get Work-group ID，same with CUDA blockIdx.x
     int global_id = get_global_id(0);
 
     // 获取当前工作项（Work-item）在工作组内的 ID，对应 threadIdx.x
@@ -17,6 +18,11 @@ __kernel void grouping_operation(
 
     // 计算当前工作组处理的 total_threads（可选，用于循环处理更多数据）
     int total_threads = get_num_groups(0) * get_local_size(0);
+    if (DEBUG_FLAG){
+        if (get_global_id(0) == 0 && get_global_id(1) == 0 && get_global_id(2) == 0 ){
+            printf("======== [GPU ov_grouping_operation] ======== \n");
+        } 
+    }
 
     int B = INPUT0_DIMS[0];
     int C = INPUT0_DIMS[1];

@@ -1,3 +1,5 @@
+#define DEBUG_FLAG false
+
 #include "grouping_operation.hpp"
 
 using namespace TemplateExtension;
@@ -50,6 +52,9 @@ bool GroupingOperation::visit_attributes(ov::AttributeVisitor& visitor) {
 
 //! [op:evaluate]
 bool GroupingOperation::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inputs) const {
+    if (DEBUG_FLAG){
+        std::cout << "======== [CPU ov_grouping_operation] ======== " << std::endl;
+    }
     const float* features = inputs[0].data<const float>();
     const int* idx = inputs[1].data<const int>();
 
@@ -82,8 +87,8 @@ bool GroupingOperation::evaluate(ov::TensorVector& outputs, const ov::TensorVect
         }
     }
     // Debug: print GroupingOperation out_tensor
-    const bool debug = false; // true / false
-    if (debug) {
+    // const bool debug = false; // true / false
+    if (DEBUG_FLAG) {
         std::cout << "[GroupingOperation Debug] out_tensor: ";
         int total = b * c * npoint * nsample;
         float* out_data = out_tensor.data<float>();
