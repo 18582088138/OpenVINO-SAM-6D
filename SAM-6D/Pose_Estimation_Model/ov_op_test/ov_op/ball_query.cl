@@ -2,6 +2,7 @@
 // OpenCL kernel for ball query operation
 // Based on the C++ implementation in ball_query.cpp
 #define MAX_N 2048
+#define DEBUG_FLAG false
 __kernel void ov_ball_query(
     __global const INPUT0_TYPE* new_xyz,   // (B, npoint, 3)
     __global const INPUT1_TYPE* xyz,       // (B, N, 3)
@@ -15,6 +16,13 @@ __kernel void ov_ball_query(
     int b = INPUT0_DIMS[0];
     int n = INPUT1_DIMS[1];
     int npoint = INPUT0_DIMS[1];
+
+    if (DEBUG_FLAG){
+        if (get_global_id(0) == 0 && get_global_id(1) == 0 && get_global_id(2) == 0 ){
+            printf("======== [ov_ball_query] ======== \n");
+            printf("batch_index: %d, point_index: %d, sample_index:%d \n",batch_index, point_index, sample_index);
+        } 
+    }
 
     float radius2 = radius * radius;
     int cnt = 0;

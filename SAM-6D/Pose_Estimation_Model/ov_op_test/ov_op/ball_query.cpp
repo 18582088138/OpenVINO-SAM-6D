@@ -5,7 +5,7 @@
 #include "ball_query.hpp"
 #include <algorithm>
 #include <omp.h>
-
+#define DEBUG_FLAG false
 using namespace TemplateExtension;
 
 //! [op:ctor]
@@ -43,10 +43,15 @@ bool BallQuery::visit_attributes(ov::AttributeVisitor& visitor) {
 
 //! [op:evaluate]
 bool BallQuery::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inputs) const {
+
     if (inputs.size() != 2) {
         throw std::runtime_error("BallQuery expects 2 inputs (new_xyz, xyz), got " + std::to_string(inputs.size()));
     }
-    // 取 attribute
+    if (DEBUG_FLAG){
+      std::cout << "======== [CPU ov_ball_query] ======== " << std::endl;
+    }
+    
+    // get attribute
     float radius = m_radius;
     int nsample = m_nsample;
     const float* new_xyz = inputs[0].data<const float>();
@@ -57,8 +62,8 @@ bool BallQuery::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inpu
     int npoint = inputs[0].get_shape()[1]; // number of points in new_xyz
 
 
-    ov::PartialShape output_shape = {b, npoint, nsample};
-    outputs[0].set_shape(output_shape.to_shape());
+    // ov::PartialShape output_shape = {b, npoint, nsample};
+    // outputs[0].set_shape(output_shape.to_shape());
     auto& out_tensor = outputs[0];
     int *current_idx = out_tensor.data<int>();
 
@@ -103,8 +108,8 @@ bool BallQuery::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inpu
       }
     }
     // Debug: print BallQuery out_tensor 
-    const bool debug = false; // true / false
-    if (debug) {
+    // const bool debug = false; // true / false
+    if (DEBUG_FLAG) {
         std::cout << "[BallQuery Debug] out_tensor: ";
         int total = b * npoint * nsample;
         int* out_data = out_tensor.data<int>();
