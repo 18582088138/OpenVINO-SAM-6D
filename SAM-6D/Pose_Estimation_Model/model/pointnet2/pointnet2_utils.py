@@ -14,8 +14,8 @@ from __future__ import (
 import torch
 from torch.autograd import Function
 import torch.nn as nn
-import pytorch_utils as pt_utils
-import sys
+
+import numpy as np
 
 try:
     import builtins
@@ -38,21 +38,21 @@ if False:
 
 DEBUG_FLAG = False # True
 
-class RandomDropout(nn.Module):
-    def __init__(self, p=0.5, inplace=False):
-        super(RandomDropout, self).__init__()
-        self.p = p
-        self.inplace = inplace
+# class RandomDropout(nn.Module):
+#     def __init__(self, p=0.5, inplace=False):
+#         super(RandomDropout, self).__init__()
+#         self.p = p
+#         self.inplace = inplace
 
-    def forward(self, X):
-        theta = torch.Tensor(1).uniform_(0, self.p)[0]
-        return pt_utils.feature_dropout_no_scaling(X, theta, self.train, self.inplace)
+#     def forward(self, X):
+#         theta = torch.Tensor(1).uniform_(0, self.p)[0]
+#         return pt_utils.feature_dropout_no_scaling(X, theta, self.train, self.inplace)
 
 
 class FurthestPointSampling(Function):
     @staticmethod
-    # def symbolic(g: torch.Graph, xyz: torch.Tensor, npoint: int) -> torch.Tensor:
     def symbolic(g: torch.Graph, xyz: torch.Tensor, npoint: torch.Tensor) -> torch.Tensor:
+    # def symbolic(g: torch.Graph, xyz: torch.Tensor, npoint: torch.Tensor) -> torch.Tensor:
         return g.op("FurthestPointSampling", xyz, npoint)
 
     @staticmethod
@@ -74,7 +74,8 @@ class FurthestPointSampling(Function):
         torch.Tensor
             (B, npoint) tensor containing the set
         """
-        fps_inds = _ext.furthest_point_sampling(xyz, npoint)
+        npoint_i = npoint.shape[0]
+        fps_inds = _ext.furthest_point_sampling(xyz, npoint_i)
         ctx.mark_non_differentiable(fps_inds)
         return fps_inds
 
@@ -358,6 +359,22 @@ class QueryAndGroup(nn.Module):
             (B, 3 + C, npoint, nsample) tensor
         """
         idx = ball_query(self.radius, self.nsample, xyz, new_xyz)
+        np.save("grouping_idx.npy",idx.numpy())
+
+        #=================Test=====================
+        """
+        The inference output of two consecutive custom operations (ball_query & grouping_operation) 
+        results in incorrect calculations. 
+        However, saving the ball_query output to a .npy file and then reading it into the grouping_operation 
+        get the correct result. 
+        This is likely a bug in the OpenVINO GPU Custom Operations. T
+        he current implementation is a workaround.
+        """
+        real_idx_data_path = "grouping_idx.npy"
+        real_idx = np.load(real_idx_data_path)
+        idx = torch.from_numpy(real_idx)
+        print(f"Loading Real data & {real_idx_data_path} ")
+        #=================Test End=====================
         if DEBUG_FLAG:
             flat_idx = idx.cpu().numpy().reshape(-1)
             with open('output/torch_ball_query.txt', 'a') as f:
@@ -378,6 +395,7 @@ class QueryAndGroup(nn.Module):
 
         xyz_trans = xyz.transpose(1, 2).contiguous()
         grouped_xyz = grouping_operation(xyz_trans, idx)  # (B, 3, npoint, nsample)
+        print(f"[grouping_operation] features_shape: {xyz_trans.shape}, idx_shape:{idx.shape}")
         if DEBUG_FLAG:
             flat_grouped_xyz = grouped_xyz.cpu().numpy().reshape(-1)
             with open('output/torch_grouping_operation.txt', 'a') as f:
@@ -390,6 +408,7 @@ class QueryAndGroup(nn.Module):
 
         if features is not None:
             grouped_features = grouping_operation(features, idx)
+            print(f"[grouping_operation] features_shape: {features.shape}, idx_shape:{idx.shape}")
             if DEBUG_FLAG:
                 flat_grouped_features = grouped_features.cpu().numpy().reshape(-1)
                 with open('output/torch_grouping_operation.txt', 'a') as f:
@@ -467,3 +486,27 @@ class GroupAll(nn.Module):
             return new_features, grouped_xyz
         else:
             return new_features
+
+MAX_PRINT_ELEMS = 200
+class CustomDebugNode(torch.autograd.Function):
+    def __init__(self):
+        super(CustomDebugNode, self).__init__()
+
+    @staticmethod
+    def forward(ctx, input):
+        flat_input = input.cpu().detach().numpy().reshape(-1)
+        print(f"[Shape]: {input.shape} , type: {type(input)}")
+        with open('output/torch_debug_node.txt', 'a') as f:
+            f.write('--- torch custom_debug_node (input) ---\n')
+            f.write(f"[Shape]: {input.shape} , dtype: {type(input)}\n")
+            # Only keep the first MAX_PRINT_ELEMS data
+            max_elements = min(MAX_PRINT_ELEMS, len(flat_input))
+            f.write(' '.join(f'{x:.2f}' for x in flat_input[:max_elements]) + '\n')
+            if len(flat_input) > MAX_PRINT_ELEMS:
+                f.write(f'... (truncated, total {len(flat_input)} elements)\n')
+            f.write('\n')
+        return input
+    
+    @staticmethod
+    def symbolic(g, input):
+        return g.op("CustomDebugNode", input, outputs=1)

@@ -43,7 +43,7 @@ class FinePointMatching(nn.Module):
         B = p1.size(0)
         
         p1_ = (p1 - init_t.unsqueeze(1)) @ init_R
-
+        
         f1 = self.in_proj(f1) + self.PE(p1_)
         f1 = torch.cat([self.bg_token.repeat(B,1,1), f1], dim=1) # adding bg
 
@@ -107,9 +107,18 @@ class PositionalEncoding(nn.Module):
         self.mlp3 = Conv1d(256, out_dim, 1, activation=None, bn=None)
 
     def forward(self, pts1, pts2=None):
+        print(f"[PositionalEncoding] pts1 shape :{pts1.shape}")
         if pts2 is None:
-            pts2 = pts1
-
+            # pts2 = pts1
+            pts2 = pts1+0.00000001
+        """
+        Error: [GPU] Different primitive with id 'parameter:pts1_/group1/BallQuery_cldnn_custom_preprocess' exists already
+        
+        When pts2 = pts1, the GPU kernel will display a different primitive already present during model compilation.
+        The specific cause of this issue is unknown, but it is confirmed to be related to OV graph transformation optimization.
+        This may be because the same source data, after OV transformation optimization, is considered a duplicate primitive when the GPU kernel primitive is executed.
+        By adding a minimum value for pts2, computation accuracy is not affected and OV optimization prevents the data from being considered the same source.
+        """
         # scale1
         feat1 = self.group1(
                 pts1.contiguous(), pts2.contiguous(), pts1.transpose(1,2).contiguous()
