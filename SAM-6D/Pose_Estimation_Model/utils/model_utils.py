@@ -57,7 +57,7 @@ def sample_pts_feats(pts, feats, npoint=2048, return_index=False):
         feats: B*N*C
     '''
 
-    sample_idx = furthest_point_sample(pts, torch.ones(npoint))
+    sample_idx = furthest_point_sample(pts, torch.ones(npoint, dtype=torch.int32))
     # sample_idx = furthest_point_sample(pts, torch.tensor(npoint))
 
     if DEBUG_FLAG:
