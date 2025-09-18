@@ -247,6 +247,9 @@ def get_templates(path, cfg, device):
         all_tem.append(torch.FloatTensor(tem).unsqueeze(0).to(device))
         all_tem_choose.append(torch.IntTensor(tem_choose).long().unsqueeze(0).to(device))
         all_tem_pts.append(torch.FloatTensor(tem_pts).unsqueeze(0).to(device))
+        # print("[all_tem] shape", tem.shape)
+        # print("[all_tem_pts] shape", tem_pts.shape)
+        # print("[all_tem_choose] shape", tem_choose.shape)
     return all_tem, all_tem_pts, all_tem_choose
 
 
@@ -418,7 +421,7 @@ if __name__ == "__main__":
     print("[PyTorch] extracting templates ...")
     tem_path = os.path.join(cfg.output_dir, 'templates')
     all_tem, all_tem_pts, all_tem_choose = get_templates(tem_path, cfg.test_dataset, device)
-
+    
     # pytorch feature extraction inference
     time_start = time.time()
     with torch.no_grad():

@@ -93,7 +93,8 @@ void furthest_point_sampling_kernel_cpu_wrapper(int b, int n, int m,
             float x1 = current_dataset[current_idxs[j - 1] * 3 + 0];
             float y1 = current_dataset[current_idxs[j - 1] * 3 + 1];
             float z1 = current_dataset[current_idxs[j - 1] * 3 + 2];
-
+            std::cout<<"x1: "<< x1 << ",y1: " << y1 << ",z1: "<< z1 <<std::endl;
+            
             // Calculate distance for each point and find the farthest point
             for (int k = 0; k < n; ++k) {
                 float x2 = current_dataset[k * 3 + 0];
