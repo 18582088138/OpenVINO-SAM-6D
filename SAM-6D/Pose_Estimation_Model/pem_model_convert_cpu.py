@@ -478,7 +478,7 @@ def onnx_model_convert_feature_extraction_submodel(model, onnx_fe_input_name, on
                 opset_version=20,
                 operator_export_type=torch.onnx.OperatorExportTypes.ONNX_ATEN_FALLBACK,
                 input_names=onnx_fe_input_name,
-                output_names=onnx_fe_output_name,
+                # output_names=onnx_fe_output_name,
                 dynamic_axes={k: {0: "batch"} for k in onnx_fe_input_name},
                 do_constant_folding=False,
                 verbose=False,  # True , for detailed output
@@ -499,7 +499,7 @@ def onnx_model_convert_pose_estimation_submodel(model, onnx_pem_input_name, onnx
             opset_version=20,
             operator_export_type=torch.onnx.OperatorExportTypes.ONNX_ATEN_FALLBACK,
             input_names=onnx_pem_input_name,
-            output_names=onnx_pem_output_name,
+            # output_names=onnx_pem_output_name,
             dynamic_axes={k: {0: "batch"} for k in onnx_pem_input_name},
             do_constant_folding=False,
             verbose=False,
@@ -587,10 +587,10 @@ def main():
 
     model_save_path = "model_save"
     os.makedirs(model_save_path, exist_ok=True)
-    onnx_pem_model_path = os.path.join(model_save_path, 'onnx_pem_model.onnx')
-    onnx_fe_model_path = os.path.join(model_save_path, 'onnx_fe_model.onnx')
-    ov_pem_model_path = os.path.join(model_save_path, 'ov_pem_model.xml')
-    ov_fe_model_path = os.path.join(model_save_path, 'ov_fe_model.xml')
+    onnx_pem_model_path = os.path.join(model_save_path, 'onnx_pem_model_cpu.onnx')
+    onnx_fe_model_path = os.path.join(model_save_path, 'onnx_fe_model_cpu.onnx')
+    ov_pem_model_path = os.path.join(model_save_path, 'ov_pem_model_cpu.xml')
+    ov_fe_model_path = os.path.join(model_save_path, 'ov_fe_model_cpu.xml')
     ov_extension_lib_path = './model/ov_pointnet2_op/build/libopenvino_operation_extension.so'
 
     core = Core()

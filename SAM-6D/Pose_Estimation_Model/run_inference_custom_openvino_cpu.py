@@ -47,8 +47,6 @@ import sys
 from PIL import Image
 import os.path as osp
 import numpy as np
-import random
-import importlib
 import time
 import json
 import cv2
@@ -383,8 +381,8 @@ def main():
 
     # ov init
     core = Core()
-    ov_pem_model_path = "model_save/ov_pem_model.xml"
-    ov_fe_model_path = "model_save/ov_fe_model.xml"
+    ov_pem_model_path = "model_save/ov_pem_model_cpu.xml"
+    ov_fe_model_path = "model_save/ov_fe_model_cpu.xml"
     ov_gpu_kernel_path = "./model/ov_pointnet2_op/ov_gpu_custom_op.xml"
     ov_extension_lib_path = "./model/ov_pointnet2_op/build/libopenvino_operation_extension.so"
     core.add_extension(ov_extension_lib_path)
@@ -401,6 +399,7 @@ def main():
     ov_pem_compiled_model = core.compile_model(ov_pem_model, cfg.device)
     
     print("[OpenVINO] extracting templates ...")
+    print("[OpenVINO] running fe model ...")
     tem_path = os.path.join(cfg.output_dir, 'templates')
     all_tem, all_tem_pts, all_tem_choose = get_templates_np(tem_path, cfg.test_dataset)
     
@@ -424,14 +423,14 @@ def main():
     feature_results = ov_fe_compiled_model(feature_inputs)
     results_list = list(feature_results.values())
     fe_time = time.time() - time_start
-    print(f"[OpenVINO] feature extraction inference time: {fe_time*1000:.2f} ms")
+    print(f"[OpenVINO] fe (feature extraction) inference time: {fe_time*1000:.2f} ms")
     
     # get output
     all_tem_pts = results_list[0]  # tem_pts_out
     all_tem_feat = results_list[1]  # tem_feat
 
     # OV pose estimation inference
-    print("[OpenVINO] loading input data ...")
+    print("[OpenVINO] loading pem input data ...")
     input_data, img, whole_pts, model_points, detections = get_test_data_np(
         cfg.rgb_path, cfg.depth_path, cfg.cam_path, cfg.cad_path, cfg.seg_path, 
         cfg.det_score_thresh, cfg.test_dataset
@@ -453,7 +452,7 @@ def main():
     # results = ov_pem_compiled_model(ov_pem_inputs)
 
     # OV pose estimation inference
-    print("[OpenVINO] running model ...")
+    print("[OpenVINO] running pem model ...")
     pem_time_start = time.time()
     results = ov_pem_compiled_model(ov_pem_inputs)
     pem_time = time.time() - pem_time_start
