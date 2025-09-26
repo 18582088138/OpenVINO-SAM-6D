@@ -56,38 +56,16 @@ def sample_pts_feats(pts, feats, npoint=2048, return_index=False):
         pts: B*N*3
         feats: B*N*C
     '''
-
-    sample_idx = furthest_point_sample(pts, torch.ones(npoint, dtype=torch.int32))
-    # sample_idx = furthest_point_sample(pts, torch.tensor(npoint))
-
-    if DEBUG_FLAG:
-        # print(f"[Torch] FurthestPointSampling output: {sample_idx}")
-        flat_sample_idx = sample_idx.cpu().detach().numpy().reshape(-1)
-        with open('output/torch_furthest_point_sampling.txt', 'a') as f:
-            f.write('--- furthest_point_sample ---\n')
-            f.write(' '.join(f'{x:.6f}' for x in flat_sample_idx) + '\n')
-    
+    npoint_tensor = torch.ones(npoint, dtype=torch.int32)
+    sample_idx = furthest_point_sample(pts, npoint_tensor)
     pts = gather_operation(pts.transpose(1,2).contiguous(), sample_idx)
-    if DEBUG_FLAG:
-        flat_pts = pts.cpu().detach().numpy().reshape(-1)
-        # print(f"[Torch] gather_operation(pts) output: {flat_pts}")
-        with open('output/torch_gather_operation.txt', 'a') as f:
-            f.write('--- gather_operation(pts) ---\n')
-            f.write(' '.join(f'{x:.6f}' for x in flat_pts) + '\n')
     pts = pts.transpose(1,2).contiguous()
     feats = gather_operation(feats.transpose(1,2).contiguous(), sample_idx)
-    if DEBUG_FLAG:
-        flat_feats = feats.cpu().detach().numpy().reshape(-1)
-        # print(f"[Torch] gather_operation(feats) output: {flat_feats}")
-        with open('output/torch_gather_operation.txt', 'a') as f:
-            f.write('--- gather_operation(feats) ---\n')
-            f.write(' '.join(f'{x:.6f}' for x in flat_feats) + '\n')
     feats = feats.transpose(1,2).contiguous()
     if return_index:
         return pts, feats, sample_idx
     else:
         return pts, feats
-
 
 def get_chosen_pixel_feats(img, choose):
     shape = img.size()
@@ -95,11 +73,11 @@ def get_chosen_pixel_feats(img, choose):
         pass
     elif len(shape) == 4:
         B, C, H, W = shape
-        img = img.reshape(B, C, H*W)
+        img = img.reshape(B, C, H*W).contiguous()
     else:
         assert False
 
-    choose = choose.unsqueeze(1).repeat(1, C, 1)
+    choose = choose.unsqueeze(1).repeat(1, C, 1).contiguous()
     x = torch.gather(img, 2, choose).contiguous()
     return x.transpose(1,2).contiguous()
 
@@ -215,6 +193,13 @@ def compute_coarse_Rt(
     n_proposal1=6000,
     n_proposal2=300,
 ):
+    '''
+    [Opt TODO] The structure is not GPU-friendly and falls back to the CPU.
+    I discovered that the compute_coarse_Rt structure contains a large number of operators that may cause a -52 OOM error. For example:
+    This is caused by excessive input data size.
+    Currently, this structure is deployed with fallback to the CPU for computation.
+    We plan to restructure this structure to avoid extremely large input sizes or to break down the input data.
+    '''
     WSVD = WeightedProcrustes()
 
     B, N1, _ = pts1.size()
@@ -242,21 +227,9 @@ def compute_coarse_Rt(
     
     # idx = torch.searchsorted(cumsum_weights, torch.rand(B, n_proposal1*3, device=device))  #Exporting the operator 'aten::searchsorted' to ONNX opset version 20 is not supported
     # Replace torch.searchsorted with ONNX compatible implementation
-
     # idx = CustomSearchSorted.apply(cumsum_weights, torch.rand(B, n_proposal1*3, device=device))
-    # if DEBUG_FLAG:
-    #     flat_idx = idx.cpu().detach().numpy().reshape(-1)
-    #     with open('output/torch_search_sorted.txt', 'a') as f:
-    #         f.write('--- torch CustomSearchSorted ---\n')
-    #         f.write(' '.join(f'{x:.2f}' for x in flat_idx) + '\n')
     
     idx = weighted_sampling_onnx_compatible(cumsum_weights, B, n_proposal1*3, device)
-    if DEBUG_FLAG:
-        flat_idx = idx.cpu().detach().numpy().reshape(-1)
-        with open('output/torch_search_sorted.txt', 'a') as f:
-            f.write('--- torch CustomSearchSorted onnx compatible ---\n')
-            f.write(' '.join(f'{x:.6f}' for x in flat_idx) + '\n')
-
     idx1, idx2 = idx.div(N2, rounding_mode='floor'), idx % N2
     idx1 = torch.clamp(idx1, max=N1-1).unsqueeze(2).repeat(1,1,3)
     idx2 = torch.clamp(idx2, max=N2-1).unsqueeze(2).repeat(1,1,3)
@@ -285,10 +258,10 @@ def compute_coarse_Rt(
     pred_t = torch.gather(pred_ts, 1, idx.reshape(B,1,1,1).repeat(1,1,1,3)).squeeze(2).squeeze(1)
     return pred_R, pred_t
 
-
 def weighted_sampling_onnx_compatible(cumsum_weights, batch_size, num_samples, device):
     """
-    [Not used] This will cause huge memory overhead, is not a good implementation method, and is not conducive to cuda infer
+    [Opt TODO] This is not a good replacement method and will cause GPU inference OOM.
+    This will cause huge memory overhead, is not a good implementation method, and is not conducive to cuda infer
     ONNX compatible weighted sampling implementation, replacing torch.searchsorted
     
     Args:
@@ -340,7 +313,7 @@ def compute_fine_Rt(
 
     assginment_score = assginment_mat.sum(2)
     pred_R, pred_t = WSVD(pred_pts, pts1, assginment_score)
-
+    
     # compute score
     pred_pts = (pts1 - pred_t.unsqueeze(1)) @ pred_R
     dis = torch.sqrt(pairwise_distance(pred_pts, model_pts)).min(2)[0]
@@ -350,7 +323,6 @@ def compute_fine_Rt(
     pose_score = pose_score * mask.mean(1)
 
     return pred_R, pred_t, pose_score
-
 
 def weighted_procrustes(
     src_points,
@@ -408,37 +380,26 @@ def weighted_procrustes(
     ref_points_centered = ref_points - ref_centroid  # (B, N, 3)
 
     H = src_points_centered.permute(0, 2, 1) @ (weights * ref_points_centered)
-    
-    # U, _, V = torch.svd(H) #Exporting the operator 'aten::svd' to ONNX opset version 20 is not supported
+    '''
+    # U, _, V = torch.svd(H)   replace by -> CustomSVD.apply(H)               
+    # Exporting the operator 'aten::svd' to ONNX opset version 20 is not supported
     # Replace torch.svd with ONNX compatible implementation
-    print(f"[weighted_procrustes] torch.svd input shape: {H.shape}")
+    '''
     # U, _, V = CustomSVD.apply(H)
+    '''
+    Currently, the OpenVINO GPU opset implementation for SVD is not complete, 
+    The GPU custom op is still used as the SVD implementation method.
+    Since the GPU custom op only supports one outpur, svd_u and svd_v are needed to replace svd
+    '''
     custom_svd_u = CustomSVDu.apply
     custom_svd_v = CustomSVDv.apply
     U = custom_svd_u(H)
     V = custom_svd_v(H)
-
-    if DEBUG_FLAG:
-        flat_H = H.cpu().detach().numpy().reshape(-1)
-        flat_U = U.cpu().detach().numpy().reshape(-1)
-        flat_V = V.cpu().detach().numpy().reshape(-1)
-        with open('output/torch_svd.txt', 'a') as f:
-            f.write('--- torch custom_svd (input) ---\n')
-            f.write(' '.join(f'{x:.2f}' for x in flat_H) + '\n')
-            f.write('--- torch custom_svd (U) ---\n')
-            f.write(' '.join(f'{x:.2f}' for x in flat_U) + '\n')
-            f.write('--- torch custom_svd (V) ---\n')
-            f.write(' '.join(f'{x:.2f}' for x in flat_V) + '\n')
     
     Ut, V = U.transpose(1, 2), V
     eye = torch.eye(3).unsqueeze(0).repeat(batch_size, 1, 1).to(src_points.device)
     # eye[:, -1, -1] = torch.sign(torch.det(V @ Ut))
     det_V_Ut = CustomDet.apply(V @ Ut)
-    if DEBUG_FLAG:
-        flat_det_V_Ut = det_V_Ut.cpu().detach().numpy().reshape(-1)
-        with open('output/torch_det.txt', 'a') as f:
-            f.write('--- torch_det(V @ Ut) ---\n')
-            f.write(' '.join(f'{x:.6f}' for x in flat_det_V_Ut) + '\n')
     eye[:, -1, -1] = torch.sign(det_V_Ut)
     R = V @ eye @ Ut
 
@@ -458,8 +419,6 @@ def weighted_procrustes(
             t = t.squeeze(0)
         return R, t
 
-
-
 class WeightedProcrustes(nn.Module):
     def __init__(self, weight_thresh=0.5, eps=1e-5, return_transform=False):
         super(WeightedProcrustes, self).__init__()
@@ -478,7 +437,6 @@ class WeightedProcrustes(nn.Module):
             src_centroid=src_centroid,
             ref_centroid=ref_centroid
         )
-
 
 class CustomSearchSorted(torch.autograd.Function):
     def __init__(self):
@@ -512,6 +470,7 @@ class CustomSVDu(torch.autograd.Function):
     
     @staticmethod
     def forward(ctx, H):
+        # print("[Torch Debug] CustomSVDu :", H.shape)
         U, S, V = torch.svd(H)
         # ctx.save_for_backward(U, S, V)
         return U
@@ -526,6 +485,7 @@ class CustomSVDv(torch.autograd.Function):
     
     @staticmethod
     def forward(ctx, H):
+        # print("[Torch Debug] CustomSVDv :", H.shape)
         U, S, V = torch.svd(H)
         # ctx.save_for_backward(U, S, V)
         return V
@@ -534,15 +494,14 @@ class CustomSVDv(torch.autograd.Function):
     def symbolic(g: torch.Graph, H: torch.Tensor) :
         return g.op("CustomSVDv", H, outputs=1)
 
-
 class CustomDet(torch.autograd.Function):
     def __init__(self):
         super(CustomDet, self).__init__()
     
     @staticmethod
     def forward(ctx, H):
+        # print("[Torch Debug] CustomDet :", H.shape)
         det = torch.det(H)
-        # print("[CustomDet]", H.shape)
         ctx.save_for_backward(det)
         return det
 

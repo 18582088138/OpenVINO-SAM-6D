@@ -280,33 +280,51 @@ class GroupingOperation(Function):
 grouping_operation = GroupingOperation.apply
 
 
-class BallQuery(Function):
-    @staticmethod
-    def symbolic(g: torch.Graph, radius: float, nsample: int, xyz: torch.Tensor, new_xyz: torch.Tensor) -> torch.Tensor:
-       return g.op("BallQuery", new_xyz, xyz, radius_f=radius, nsample_i=nsample)
+# class BallQuery(Function):
+#     @staticmethod
+#     def symbolic(g: torch.Graph, radius: float, nsample: int, xyz: torch.Tensor, new_xyz: torch.Tensor) -> torch.Tensor:
+#        return g.op("BallQuery", new_xyz, xyz, radius_f=radius, nsample_i=nsample)
     
+#     @staticmethod
+#     def forward(ctx, radius, nsample, xyz, new_xyz):
+#         # type: (Any, float, int, torch.Tensor, torch.Tensor) -> torch.Tensor
+#         r"""
+
+#         Parameters
+#         ----------
+#         radius : float
+#             radius of the balls
+#         nsample : int
+#             maximum number of features in the balls
+#         xyz : torch.Tensor
+#             (B, N, 3) xyz coordinates of the features
+#         new_xyz : torch.Tensor
+#             (B, npoint, 3) centers of the ball query
+
+#         Returns
+#         -------
+#         torch.Tensor
+#             (B, npoint, nsample) tensor with the indicies of the features that form the query balls
+#         """
+#         inds = _ext.ball_query(new_xyz, xyz, radius, nsample)
+#         print("[BallQuery Debug] inds :", inds.shape, inds.type(), inds.dtype)
+#         ctx.mark_non_differentiable(inds)
+#         return inds
+
+#     @staticmethod
+#     def backward(ctx, a=None):
+#         return None, None, None, None
+
+class BallQuery(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, radius, nsample, xyz, new_xyz):
-        # type: (Any, float, int, torch.Tensor, torch.Tensor) -> torch.Tensor
-        r"""
+    def symbolic(g, new_xyz, xyz, radius, nsample):
+        return g.op("BallQuery", new_xyz, xyz, radius_f=radius, nsample_i=nsample)
 
-        Parameters
-        ----------
-        radius : float
-            radius of the balls
-        nsample : int
-            maximum number of features in the balls
-        xyz : torch.Tensor
-            (B, N, 3) xyz coordinates of the features
-        new_xyz : torch.Tensor
-            (B, npoint, 3) centers of the ball query
-
-        Returns
-        -------
-        torch.Tensor
-            (B, npoint, nsample) tensor with the indicies of the features that form the query balls
-        """
+    # type: (Any, float, int, torch.Tensor, torch.Tensor) -> torch.Tensor
+    @staticmethod
+    def forward(ctx, new_xyz, xyz, radius, nsample):
         inds = _ext.ball_query(new_xyz, xyz, radius, nsample)
+        print("[BallQuery Debug] inds :", inds.shape, inds.type(), inds.dtype)
         ctx.mark_non_differentiable(inds)
         return inds
 
@@ -358,8 +376,7 @@ class QueryAndGroup(nn.Module):
         new_features : torch.Tensor
             (B, 3 + C, npoint, nsample) tensor
         """
-        idx = ball_query(self.radius, self.nsample, xyz, new_xyz)
-        np.save("grouping_idx.npy",idx.numpy())
+        idx = ball_query(new_xyz, xyz, self.radius, self.nsample)
 
         #=================Test=====================
         """
@@ -370,16 +387,17 @@ class QueryAndGroup(nn.Module):
         This is likely a bug in the OpenVINO GPU Custom Operations. T
         he current implementation is a workaround.
         """
-        real_idx_data_path = "grouping_idx.npy"
-        real_idx = np.load(real_idx_data_path)
-        idx = torch.from_numpy(real_idx)
-        print(f"Loading Real data & {real_idx_data_path} ")
-        #=================Test End=====================
-        if DEBUG_FLAG:
-            flat_idx = idx.cpu().numpy().reshape(-1)
-            with open('output/torch_ball_query.txt', 'a') as f:
-                f.write('--- ball_query ---\n')
-                f.write(' '.join(f'{x:.6f}' for x in flat_idx) + '\n')
+        # np.save("grouping_idx.npy",idx.numpy())
+        # real_idx_data_path = "grouping_idx.npy"
+        # real_idx = np.load(real_idx_data_path)
+        # idx = torch.from_numpy(real_idx)
+        # print(f"Loading Real data & {real_idx_data_path} ")
+        # #=================Test End=====================
+        # if DEBUG_FLAG:
+        #     flat_idx = idx.cpu().numpy().reshape(-1)
+        #     with open('output/torch_ball_query.txt', 'a') as f:
+        #         f.write('--- ball_query ---\n')
+        #         f.write(' '.join(f'{x:.6f}' for x in flat_idx) + '\n')
 
         if self.sample_uniformly:
             unique_cnt = torch.zeros((idx.shape[0], idx.shape[1]))
@@ -395,12 +413,12 @@ class QueryAndGroup(nn.Module):
 
         xyz_trans = xyz.transpose(1, 2).contiguous()
         grouped_xyz = grouping_operation(xyz_trans, idx)  # (B, 3, npoint, nsample)
-        print(f"[grouping_operation] features_shape: {xyz_trans.shape}, idx_shape:{idx.shape}")
-        if DEBUG_FLAG:
-            flat_grouped_xyz = grouped_xyz.cpu().numpy().reshape(-1)
-            with open('output/torch_grouping_operation.txt', 'a') as f:
-                f.write('--- grouping_operation (flat_grouped_xyz) ---\n')
-                f.write(' '.join(f'{x:.6f}' for x in flat_grouped_xyz) + '\n')
+        # print(f"[grouping_operation] features_shape: {xyz_trans.shape}, idx_shape:{idx.shape}")
+        # if DEBUG_FLAG:
+        #     flat_grouped_xyz = grouped_xyz.cpu().numpy().reshape(-1)
+        #     with open('output/torch_grouping_operation.txt', 'a') as f:
+        #         f.write('--- grouping_operation (flat_grouped_xyz) ---\n')
+        #         f.write(' '.join(f'{x:.6f}' for x in flat_grouped_xyz) + '\n')
 
         grouped_xyz -= new_xyz.transpose(1, 2).unsqueeze(-1)
         if self.normalize_xyz:
@@ -408,12 +426,12 @@ class QueryAndGroup(nn.Module):
 
         if features is not None:
             grouped_features = grouping_operation(features, idx)
-            print(f"[grouping_operation] features_shape: {features.shape}, idx_shape:{idx.shape}")
-            if DEBUG_FLAG:
-                flat_grouped_features = grouped_features.cpu().numpy().reshape(-1)
-                with open('output/torch_grouping_operation.txt', 'a') as f:
-                    f.write('--- grouping_operation (flat_grouped_features) ---\n')
-                    f.write(' '.join(f'{x:.6f}' for x in flat_grouped_features) + '\n')
+            # print(f"[grouping_operation] features_shape: {features.shape}, idx_shape:{idx.shape}")
+            # if DEBUG_FLAG:
+            #     flat_grouped_features = grouped_features.cpu().numpy().reshape(-1)
+            #     with open('output/torch_grouping_operation.txt', 'a') as f:
+            #         f.write('--- grouping_operation (flat_grouped_features) ---\n')
+            #         f.write(' '.join(f'{x:.6f}' for x in flat_grouped_features) + '\n')
 
             if self.use_xyz:
                 new_features = torch.cat(

@@ -100,7 +100,6 @@ class FeatureExtractionWrapper(nn.Module):
 
         # call original method
         return self.feature_extraction.get_obj_feats(tem_rgb_batch, tem_pts_batch, tem_choose_batch)
-        # return self.feature_extraction._get_obj_feats_batched(rgb_input, pts_input, choose_input)
 
 def onnx_model_convert_feature_extraction_submodel(model, onnx_fe_input_name, onnx_fe_input, onnx_model_path):
     feature_wrapper = FeatureExtractionWrapper(model.feature_extraction)
@@ -135,8 +134,6 @@ def openvino_model_convert_feature_extraction_submodel(core, ov_fe_input_name, o
     ov.save_model(ov_fe_model, ov_fe_model_path)
     print(f"[OpenVINO] feature extraction submodel convert success: {ov_fe_model_path}")
 
-
-
 def openvino_infer_feature_extraction_submodel(core, ov_fe_input, ov_fe_model_path, ov_gpu_kernel_path, device):
     ov_fe_model = core.read_model(ov_fe_model_path)
 
@@ -156,14 +153,10 @@ def openvino_infer_feature_extraction_submodel(core, ov_fe_input, ov_fe_model_pa
     ov_fe_results = ov_fe_compiled_model(ov_fe_input)
     ov_fe_results_list = list(ov_fe_results.values())
     fe_time = time.time() - time_start
-    print(f"[OpenVINO] fe (feature extraction) inference time: {fe_time*1000:.2f} ms")
-    ov_all_tem_pts = ov_fe_results_list[0]
-    ov_all_tem_feat = ov_fe_results_list[1]
-    return ov_all_tem_pts, ov_all_tem_feat
+    print(f"[OpenVINO {device}] fe (feature extraction) inference time: {fe_time*1000:.2f} ms")
+    return ov_fe_results_list
 
 def torch_infer_feature_extraction_submodel_list(model, input_data):
-    # tem_path = os.path.join(cfg.output_dir, 'templates')
-    # all_tem, all_tem_pts, all_tem_choose = get_templates(tem_path, cfg.test_dataset, device)
     all_tem = input_data[0]
     all_tem_pts = input_data[1]
     all_tem_choose = input_data[2]
@@ -184,7 +177,8 @@ def torch_infer_feature_extraction_submodel_batched(model, input_data):
         all_tem_pts, all_tem_feat = feature_wrapper(all_tem, all_tem_pts, all_tem_choose)
     fe_time = time.time() - time_start
     print(f"[PyTorch] feature extraction inference time: {fe_time*1000:.2f} ms")
-    return all_tem_pts, all_tem_feat
+    torch_output_list = [all_tem_pts, all_tem_feat]
+    return torch_output_list
 
 def compare_result(torch_out, ov_out, device, atol=1e-4, return_indices=True, top_k=10):
     # Compare
@@ -337,40 +331,51 @@ def main():
     openvino_model_convert_feature_extraction_submodel(core, ov_fe_input_name, ov_fe_input, onnx_fe_model_path, ov_fe_model_path, ov_extension_lib_path)
 
     # torch model infer
-    torch_all_tem_pts, torch_all_tem_feat = torch_infer_feature_extraction_submodel_list(model, torch_fe_input)
-    # torch_all_tem_pts, torch_all_tem_feat = torch_infer_feature_extraction_submodel_batched(model, onnx_fe_input)
+    """
+    [Draft] Using batch type output instead of list input can effectively improve the performance of FE model
+    Currently, there are some differences in the output results of get_obj_feats batch and list.
+    """
+    # torch_output = torch_infer_feature_extraction_submodel_list(model, torch_fe_input)
+    torch_output = torch_infer_feature_extraction_submodel_batched(model, onnx_fe_input)
 
     # openvino model cpu infer
     ov_device = "CPU"
-    ov_all_tem_pts_cpu, ov_all_tem_feat_cpu = openvino_infer_feature_extraction_submodel(core, ov_fe_input, ov_fe_model_path, ov_gpu_kernel_path, ov_device)
-    compare_result(torch_all_tem_pts, ov_all_tem_pts_cpu, ov_device)
-    compare_result(torch_all_tem_feat, ov_all_tem_feat_cpu, ov_device)
+    DEBUG_FLAG = False # True / False
+    ov_output_cpu = openvino_infer_feature_extraction_submodel(core, ov_fe_input, ov_fe_model_path, ov_gpu_kernel_path, ov_device)
+    if DEBUG_FLAG:
+        for i in range(len(ov_output_cpu)):
+            print(f"=====================[{ov_device} Result Compare :The {i}th output]======================")
+            compare_result(torch_output[i], ov_output_cpu[i], ov_device)
 
     # openvino model gpu infer
     ov_device = "GPU"
-    ov_all_tem_pts_gpu, ov_all_tem_feat_gpu = openvino_infer_feature_extraction_submodel(core, ov_fe_input, ov_fe_model_path, ov_gpu_kernel_path, ov_device)
-    compare_result(torch_all_tem_pts, ov_all_tem_pts_gpu, ov_device)
-    compare_result(torch_all_tem_feat, ov_all_tem_feat_gpu, ov_device)
+    DEBUG_FLAG = False # True / False
+    ov_output_gpu = openvino_infer_feature_extraction_submodel(core, ov_fe_input, ov_fe_model_path, ov_gpu_kernel_path, ov_device)
+    ov_output_gpu = openvino_infer_feature_extraction_submodel(core, ov_fe_input, ov_fe_model_path, ov_gpu_kernel_path, ov_device)
+    if DEBUG_FLAG:
+        for i in range(len(ov_output_gpu)):
+            print(f"=====================[{ov_device} Result Compare :The {i}th output]======================")
+            compare_result(torch_output[i], ov_output_gpu[i], ov_device)
 
     # openvino model HETERO:GPU,CPU infer
     ov_device = "HETERO:GPU,CPU"
-    ov_all_tem_pts_hetero, ov_all_tem_feat_hetero = openvino_infer_feature_extraction_submodel(core, ov_fe_input, ov_fe_model_path, ov_gpu_kernel_path, "HETERO:GPU,CPU")
-    compare_result(torch_all_tem_pts, ov_all_tem_pts_hetero, ov_device)
-    compare_result(torch_all_tem_feat, ov_all_tem_feat_hetero, ov_device)
+    DEBUG_FLAG = False # True / False
+    ov_output_hetero = openvino_infer_feature_extraction_submodel(core, ov_fe_input, ov_fe_model_path, ov_gpu_kernel_path, "HETERO:GPU,CPU")
+    if DEBUG_FLAG:
+        for i in range(len(ov_output_hetero)):
+            print(f"=====================[{ov_device} Result Compare :The {i}th output]======================")
+            compare_result(torch_output[i], ov_output_hetero[i], ov_device)
 
 if __name__ == "__main__":
     main()
     """
-    feature extraction(FE) model, with 2 custom op, 
-    CPU inference success, result correct : FurthestPointSampling(opset) + GroupingOperation (extsnion)
-    GPU inference success, result incorrect: FurthestPointSampling(opset) + GroupingOperation (extsnion), Max diff: 5.48058, MSE: 0.684111
-    HETERO:GPU,CPU failed : FurthestPointSampling(opset) + GroupingOperation (extsnion), with issue 'add_parameters(): Tried to add parameter (index in array 0) but Model already have the same parameter with index 0'
+    This submodel includes: 
+        FeatureExtraction model (feature_extraction.get_obj_feats).
+    Currently, there are CPU infer pass, GPU infer pass, and Hetero infer pass.
 
-    GPU inference success, result incorrect: FurthestPointSampling(opset) + GroupingOperation (opset), ov_output=0.00000
-    HETERO:GPU,CPU failed : FurthestPointSampling(opset) + GroupingOperation (opset), ov_output=0.00000
-    
-    One more thing:
-    if 'HETERO:GPU,CPU' mode direct run  will result in an error.
-    Check 'ov::shape_size(port.get_shape()) == ov::shape_size(mem_shape)' failed at src/plugins/intel_gpu/src/plugin/sync_infer_request.cpp:395: [GPU] Unexpected elements count for output tensor
-    if Run 'GPU' first before running 'HETERO:GPU,CPU', the result is ov_output=0.00000
+    Using batch type output instead of list input can effectively improve the performance of FE model
+    Currently, there are some differences in the output results of get_obj_feats batch and list.
+    Need to debug the difference between 'get_obj_feats batch and list' structure.
+
+    Consider using OV GPU for actual deployment.
     """
