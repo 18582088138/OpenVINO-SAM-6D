@@ -266,17 +266,17 @@ def get_test_data(rgb_path, depth_path, cam_path, cad_path, seg_path, det_score_
         cfg: config object, must have n_sample_observed_point, img_size, rgb_mask_flag
         device: str, device to place tensors on
     Returns:
-        ret_dict: dict with keys:
+        input_data: dict with keys:
             'pts': torch.Tensor, (N, n_sample_observed_point, 3)
             'rgb': torch.Tensor, (N, 3, img_size, img_size)
             'rgb_choose': torch.Tensor, (N, n_sample_observed_point)
             'score': torch.Tensor, (N,)
             'model': torch.Tensor, (N, n_sample_model_point, 3)
             'K': torch.Tensor, (N, 3, 3)
-        whole_image: np.ndarray, (H, W, 3), original RGB image
+        img: np.ndarray, (H, W, 3), original RGB image
         whole_pts: np.ndarray, (H*W, 3), full point cloud
         model_points: np.ndarray, (n_sample_model_point, 3)
-        all_dets: list[dict], detection info
+        detections: list[dict], detection info
     """
     dets = []
     with open(seg_path) as f:
@@ -289,9 +289,9 @@ def get_test_data(rgb_path, depth_path, cam_path, cad_path, seg_path, det_score_
     cam_info = json.load(open(cam_path))
     K = np.array(cam_info['cam_K']).reshape(3, 3)
 
-    whole_image = load_im(rgb_path).astype(np.uint8)
-    if len(whole_image.shape)==2:
-        whole_image = np.concatenate([whole_image[:,:,None], whole_image[:,:,None], whole_image[:,:,None]], axis=2)
+    img = load_im(rgb_path).astype(np.uint8)
+    if len(img.shape)==2:
+        img = np.concatenate([img[:,:,None], img[:,:,None], img[:,:,None]], axis=2)
     whole_depth = load_im(depth_path).astype(np.float32) * cam_info['depth_scale'] / 1000.0
     whole_pts = get_point_cloud_from_depth(whole_depth, K)
 
@@ -303,7 +303,7 @@ def get_test_data(rgb_path, depth_path, cam_path, cad_path, seg_path, det_score_
     all_cloud = []
     all_rgb_choose = []
     all_score = []
-    all_dets = []
+    detections = []
     for inst in dets:
         seg = inst['segmentation']
         score = inst['score']
@@ -342,7 +342,7 @@ def get_test_data(rgb_path, depth_path, cam_path, cad_path, seg_path, det_score_
         cloud = cloud[choose_idx]
 
         # rgb
-        rgb = whole_image.copy()[y1:y2, x1:x2, :][:,:,::-1]
+        rgb = img.copy()[y1:y2, x1:x2, :][:,:,::-1]
         if cfg.rgb_mask_flag:
             rgb = rgb * (mask[:,:,None]>0).astype(np.uint8)
         rgb = cv2.resize(rgb, (cfg.img_size, cfg.img_size), interpolation=cv2.INTER_LINEAR)
@@ -353,18 +353,18 @@ def get_test_data(rgb_path, depth_path, cam_path, cad_path, seg_path, det_score_
         all_cloud.append(torch.FloatTensor(cloud))
         all_rgb_choose.append(torch.IntTensor(rgb_choose).long())
         all_score.append(score)
-        all_dets.append(inst)
+        detections.append(inst)
 
-    ret_dict = {}
-    ret_dict['pts'] = torch.stack(all_cloud).to(device)
-    ret_dict['rgb'] = torch.stack(all_rgb).to(device)
-    ret_dict['rgb_choose'] = torch.stack(all_rgb_choose).to(device)
-    ret_dict['score'] = torch.FloatTensor(all_score).to(device)
+    input_data = {}
+    input_data['pts'] = torch.stack(all_cloud).to(device)
+    input_data['rgb'] = torch.stack(all_rgb).to(device)
+    input_data['rgb_choose'] = torch.stack(all_rgb_choose).to(device)
+    input_data['score'] = torch.FloatTensor(all_score).to(device)
 
-    ninstance = ret_dict['pts'].size(0)
-    ret_dict['model'] = torch.FloatTensor(model_points).unsqueeze(0).repeat(ninstance, 1, 1).to(device)
-    ret_dict['K'] = torch.FloatTensor(K).unsqueeze(0).repeat(ninstance, 1, 1).to(device)
-    return ret_dict, whole_image, whole_pts.reshape(-1, 3), model_points, all_dets
+    ninstance = input_data['pts'].size(0)
+    input_data['model'] = torch.FloatTensor(model_points).unsqueeze(0).repeat(ninstance, 1, 1).to(device)
+    input_data['K'] = torch.FloatTensor(K).unsqueeze(0).repeat(ninstance, 1, 1).to(device)
+    return input_data, img, whole_pts.reshape(-1, 3), model_points, detections
 
 
 if __name__ == "__main__":
@@ -375,6 +375,7 @@ if __name__ == "__main__":
 
     # set device
     device = torch.device(cfg.device)
+    # device = torch.device("xpu")
     print(f"[PyTorch] Using device: {device}")
 
     # pytorch load model
@@ -470,7 +471,7 @@ if __name__ == "__main__":
         detections[idx]['score'] = float(pose_scores[idx])
         detections[idx]['R'] = list(pred_rot[idx].tolist())
         detections[idx]['t'] = list(pred_trans[idx].tolist())
-
+    
     with open(os.path.join(f"{cfg.output_dir}/sam6d_results", f'detection_pem_{cfg.device}.json'), "w") as f:
         json.dump(detections, f)
 

@@ -53,5 +53,7 @@ class Net(nn.Module):
             dense_po_out, dense_fo_out, geo_embedding_o, fps_idx_o,
             radius, model, init_R, init_t
         )
-        return pred_R, pred_t, pred_pose_score
+        return pred_R, pred_t, pred_pose_score, \
+            #     dense_pm, dense_fm, geo_embedding_m, fps_idx_m, \
+            #    dense_po_out, dense_fo_out, geo_embedding_o, fps_idx_o, radius, sparse_fm
 

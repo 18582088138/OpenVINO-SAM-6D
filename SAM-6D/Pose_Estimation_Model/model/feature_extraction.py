@@ -128,10 +128,11 @@ class ViTEncoder(nn.Module):
     def forward(self, pts, rgb, rgb_choose, dense_po, dense_fo):
         dense_fm = self.get_img_feats(rgb, rgb_choose)
         dense_pm = pts
+        
         # 兼容推理时 dense_po/dense_fo
         if dense_po is not None and dense_fo is not None:
             radius = torch.norm(dense_po, dim=2).max(1)[0]
-            dense_pm = dense_pm / (radius.reshape(-1, 1, 1) + 1e-6)
+            dense_pm = dense_pm / (radius.reshape(-1, 1, 1) + 1e-6) # for debug
             dense_po = dense_po / (radius.reshape(-1, 1, 1) + 1e-6)
         else:
             raise ValueError('dense_po and dense_fo must be provided for export/inference')
@@ -149,7 +150,6 @@ class ViTEncoder(nn.Module):
             return self._get_obj_feats_batched(tem_rgb_list, tem_pts_list, tem_choose_list, npoint)
 
     def _get_obj_feats_list(self, tem_rgb_list, tem_pts_list, tem_choose_list, npoint):
-        # print("[Torch Debug] _get_obj_feats_list")
         tem_feat_list = []
         for tem, tem_choose in zip(tem_rgb_list, tem_choose_list):
             tem_feat_list.append(self.get_img_feats(tem, tem_choose))
@@ -159,7 +159,6 @@ class ViTEncoder(nn.Module):
 
     def _get_obj_feats_batched(self, tem_rgb_batch, tem_pts_batch, tem_choose_batch, npoint):
         #  batched implement for onnx export
-        # print("[Torch Debug] _get_obj_feats_batched")
         B, T = tem_rgb_batch.shape[:2]
         rgb_flat = tem_rgb_batch.view(B*T, *tem_rgb_batch.shape[2:])
         choose_flat = tem_choose_batch.view(B*T, -1)

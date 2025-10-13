@@ -485,6 +485,7 @@ def main():
     vis_img.save(save_path)
     print(f"[OpenVINO Inference Done] Pose_Estimation_Model ({cfg.device} Version)") 
     print(f"[OpenVINO] PEM E2E Inference Time: {(fe_time + pem_time):.2f} s")    
+    print(f"[OpenVINO] PEM E2E save path : {save_path}")
 
 
 if __name__ == "__main__":

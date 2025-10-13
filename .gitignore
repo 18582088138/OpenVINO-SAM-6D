@@ -12,3 +12,5 @@
 **/custom_op/
 **/model_save/
 **/test_model/
+**/debug_code/
+**/ov_test*

@@ -9,8 +9,6 @@ from model_utils import (
 )
 from loss_utils import compute_correspondence_loss
 
-
-
 class CoarsePointMatching(nn.Module):
     def __init__(self, cfg, return_feat=False):
         super(CoarsePointMatching, self).__init__()
@@ -51,7 +49,10 @@ class CoarsePointMatching(nn.Module):
                     self.cfg.temp,
                     self.cfg.normalize_feat
                 ))
-                
+        # coarse_Rt_atten = atten_list[-1]
+        # coarse_Rt_model_pts = model / (radius.reshape(-1, 1, 1) + 1e-6)
+        # return coarse_Rt_atten, coarse_Rt_model_pts
+        
         # 只返回粗匹配的初始R/t
         # 训练时可返回更多
         init_R, init_t = compute_coarse_Rt(

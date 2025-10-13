@@ -29,25 +29,20 @@ sys.path.append(os.path.join(ROOT_DIR, 'utils'))
 sys.path.append(os.path.join(ROOT_DIR, 'model'))
 sys.path.append(os.path.join(BASE_DIR, 'model', 'pointnet2'))
 
-from model.feature_extraction import ViTEncoder
-from model.ov_coarse_point_matching import CoarsePointMatching
-from model.ov_fine_point_matching import FinePointMatching
-from model.transformer import GeometricStructureEmbedding
-from utils.model_utils import sample_pts_feats, compute_coarse_Rt
-from run_inference_custom_pytorch import *
-from pointnet2_utils import furthest_point_sample
+# from run_inference_custom_pytorch import *
+from run_inference_custom_openvino_gpu import *
 
 class OVPEM_Sub3(nn.Module):
-    def __init__(self, cfg, npoint=2048):
+    def __init__(self, cfg, model, npoint=2048):
         super(OVPEM_Sub3, self).__init__()
         self.cfg = cfg
-        self.fine_point_matching = FinePointMatching(cfg.fine_point_matching)
+        self.model = model
 
     def forward(self, dense_pm, dense_fm, geo_embedding_m, fps_idx_m,
             dense_po_out, dense_fo_out, geo_embedding_o, fps_idx_o,
             radius, model, init_R, init_t):
 
-        fine_Rt_atten, fine_Rt_model_pts = self.fine_point_matching(
+        fine_Rt_atten, fine_Rt_model_pts = self.model.fine_point_matching(
             dense_pm, dense_fm, geo_embedding_m, fps_idx_m,
             dense_po_out, dense_fo_out, geo_embedding_o, fps_idx_o,
             radius, model, init_R, init_t
@@ -68,6 +63,7 @@ def prepare_pem_data(cfg, torch_model, device, npoint=None):
     model_file_path = "output/model.npy"
     init_R_file_path="output/init_R.npy"
     init_t_file_path="output/init_t.npy"
+    # if False:
     if os.path.exists(dense_pm_file_path) & os.path.exists(init_R_file_path):
         dense_pm = torch.from_numpy(np.load(dense_pm_file_path))
         dense_fm = torch.from_numpy(np.load(dense_fm_file_path))
@@ -111,10 +107,13 @@ def prepare_pem_data(cfg, torch_model, device, npoint=None):
     batch_size = -1
     ov_pem_input_name = {"dense_pm": [batch_size, 2048, 3],
                         "dense_fm": [batch_size, 2048, 256],
+
                         "geo_embedding_m": [batch_size, 197, 197, 256],
                         "fps_idx_m": [batch_size, 196],
+
                         "dense_po_out": [batch_size, 2048, 3],
                         "dense_fo_out": [batch_size, 2048, 256],
+
                         "geo_embedding_o": [batch_size, 197, 197, 256],
                         "fps_idx_o": [batch_size, 196],
                         "radius": [batch_size], 
@@ -125,16 +124,20 @@ def prepare_pem_data(cfg, torch_model, device, npoint=None):
     ov_pem_input = {
                 "dense_pm": dense_pm, 
                 "dense_fm": dense_fm, 
+
                 "geo_embedding_m": geo_embedding_m, 
                 "fps_idx_m": fps_idx_m,
+
                 "dense_po_out": dense_po_out, 
                 "dense_fo_out": dense_fo_out, 
+
                 "geo_embedding_o": geo_embedding_o, 
                 "fps_idx_o": fps_idx_o,
                 "radius": radius, 
                 "model": model, 
                 "init_R": init_R, 
-                "init_t": init_t}
+                "init_t": init_t
+                }
 
     return (torch_pem_input, 
             onnx_pem_input_name, 
@@ -169,7 +172,8 @@ def openvino_model_convert_pose_estimation_submodel(core, ov_pem_input_name, ov_
                                     extension=ov_extension_lib_path,
                                     )
     compiled_model = core.compile_model(ov_pem_model, 'CPU')
-    ov.save_model(ov_pem_model, ov_pem_model_path)
+
+    ov.save_model(ov_pem_model, ov_pem_model_path, compress_to_fp16=False)
     print(f"[OpenVINO] pose estimation submodel convert success: {ov_pem_model_path}")
 
 def openvino_infer_pose_estimation_submodel(core, ov_fe_input, ov_fe_model_path, ov_gpu_kernel_path, device):
@@ -202,8 +206,8 @@ def torch_infer_pose_estimation_submodel(model, input_data, save_flag=True):
     fe_time = time.time() - time_start
     print(f"[PyTorch] feature extraction inference time: {fe_time*1000:.2f} ms")
     torch_output_list = [fine_Rt_atten, fine_Rt_model_pts]
-    if save_flag:
-        torch_save_result(torch_output_list)
+    # if save_flag:
+    #     torch_save_result(torch_output_list)
     return torch_output_list
 
 def torch_save_result(torch_output_list):
@@ -301,7 +305,7 @@ def main():
     torch.manual_seed(cfg.rd_seed)
 
     # device setting
-    device = torch.device(cfg.device)
+    device = torch.device(cfg.device.lower())
     print(f"Using device: {device}")
 
     # model loading
@@ -332,14 +336,14 @@ def main():
                 for prefix in ('module.', 'model.', 'net.'):
                     nk = _strip_prefix(nk, prefix)
                 normalized_state[nk] = v
-            model_state = model.state_dict()
+            model_state = torch_model.state_dict()
             # filter by matching keys and shapes
             filtered_state = {k: v for k, v in normalized_state.items() if k in model_state and v.shape == model_state[k].shape}
             missing_keys = [k for k in model_state.keys() if k not in normalized_state]
             unexpected_keys = [k for k in normalized_state.keys() if k not in model_state]
             print(f"Partial checkpoint load -> matched: {len(filtered_state)}/{len(model_state)}, missing: {len(missing_keys)}, unexpected: {len(unexpected_keys)}")
             model_state.update(filtered_state)
-            model.load_state_dict(model_state, strict=False)
+            torch_model.load_state_dict(model_state, strict=False)
             print("Checkpoint loaded with partial matching")
         except Exception as e:
             print(f"Warning: Could not load checkpoint: {e}")
@@ -348,9 +352,9 @@ def main():
     model_save_path = "model_save"
     os.makedirs(model_save_path, exist_ok=True)
     onnx_pem_model_path = os.path.join(model_save_path, 'onnx_pem_sub3_model.onnx')
-    ov_pem_model_path = os.path.join(model_save_path, 'onnx_pem_sub3_model.xml')
-    ov_gpu_kernel_path = "./model/ov_pointnet2_op_mix/ov_gpu_custom_op.xml"
-    ov_extension_lib_path = './model/ov_pointnet2_op_mix/build/libopenvino_operation_extension.so'
+    ov_pem_model_path = os.path.join(model_save_path, 'ov_pem_sub3_model.xml')
+    ov_gpu_kernel_path = "./model/ov_pointnet2_op/ov_gpu_custom_op.xml"
+    ov_extension_lib_path = './model/ov_pointnet2_op/build/libopenvino_operation_extension.so'
 
     core = Core()
     core.add_extension(ov_extension_lib_path)
@@ -360,7 +364,7 @@ def main():
         onnx_pem_input_name, onnx_pem_input, \
         ov_pem_input_name, ov_pem_input = prepare_pem_data(cfg, torch_model, device)
 
-    pem_sub3_model = OVPEM_Sub3(cfg.model)
+    pem_sub3_model = OVPEM_Sub3(cfg.model, model=torch_model)
 
     # torch model infer
     torch_output = torch_infer_pose_estimation_submodel(pem_sub3_model, torch_pem_input)
@@ -374,7 +378,7 @@ def main():
    
     # openvino model cpu infer
     ov_device = "CPU"
-    DEBUG_FLAG = False # True / False
+    DEBUG_FLAG = True # True / False
     ov_output_cpu = openvino_infer_pose_estimation_submodel(core, ov_pem_input, ov_pem_model_path, ov_gpu_kernel_path, ov_device)
     if DEBUG_FLAG:
         for i in range(len(ov_output_cpu)):
@@ -385,7 +389,7 @@ def main():
     # openvino model gpu infer
     ov_device = "GPU"
     DEBUG_FLAG = False # True / False
-    ov_output_gpu = openvino_infer_pose_estimation_submodel(core, ov_pem_input, ov_pem_model_path, ov_gpu_kernel_path, ov_device)
+    # ov_output_gpu = openvino_infer_pose_estimation_submodel(core, ov_pem_input, ov_pem_model_path, ov_gpu_kernel_path, ov_device)
     ov_output_gpu = openvino_infer_pose_estimation_submodel(core, ov_pem_input, ov_pem_model_path, ov_gpu_kernel_path, ov_device)
     if DEBUG_FLAG:
         for i in range(len(ov_output_gpu)):
@@ -411,7 +415,11 @@ if __name__ == "__main__":
     """
     This submodel includes: 
         FinePointMatching (without compute_fine_Rt).
-    Currently, there are CPU infer pass, GPU infer pass, and Hetero infer failed.
+    Result compare(with pytorch), 
+      - CPU infer pass,  accuracy failed
+      - GPU infer pass,  accuracy failed
+      - Hetero infer failed.
+
 
     [Need Debug]The first output is significantly different from the torch output, 
     The second is correct.

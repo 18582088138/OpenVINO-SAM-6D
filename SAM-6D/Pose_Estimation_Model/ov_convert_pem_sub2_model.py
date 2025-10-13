@@ -1,14 +1,8 @@
-import argparse
 import os
-from sre_parse import FLAGS
 import sys
-from PIL import Image
-import os.path as osp
 import numpy as np
 import random
 import importlib
-import json
-import cv2
 
 import torch
 import torch.nn as nn
@@ -16,9 +10,6 @@ import torchvision.transforms as transforms
 
 import openvino as ov
 from openvino import Core
-
-import pycocotools.mask as cocomask
-import trimesh
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -31,7 +22,8 @@ sys.path.append(os.path.join(ROOT_DIR, 'model'))
 sys.path.append(os.path.join(BASE_DIR, 'model', 'pointnet2'))
 
 from utils.model_utils import compute_coarse_Rt
-from run_inference_custom_pytorch import *
+# from run_inference_custom_pytorch import *
+from run_inference_custom_openvino_gpu import *
 
 class OVPEM_Sub2(nn.Module):
     def __init__(self, cfg, npoint=2048):
@@ -113,7 +105,7 @@ def openvino_model_convert_pose_estimation_submodel(core, ov_pem_input_name, ov_
                                     extension=ov_extension_lib_path,
                                     )
     compiled_model = core.compile_model(ov_pem_model, 'CPU')
-    ov.save_model(ov_pem_model, ov_pem_model_path)
+    ov.save_model(ov_pem_model, ov_pem_model_path, compress_to_fp16=False)
     print(f"[OpenVINO] pose estimation submodel convert success: {ov_pem_model_path}")
 
 def openvino_infer_pose_estimation_submodel(core, ov_fe_input, ov_fe_model_path, ov_gpu_kernel_path, device):
@@ -145,7 +137,7 @@ def torch_infer_pose_estimation_submodel(model, input_data, save_flag=True):
         init_R, init_t = model(*input_data)
     fe_time = time.time() - time_start
     print(f"[PyTorch] feature extraction inference time: {fe_time*1000:.2f} ms")
-    torch_output_list = [init_R, init_t]
+    torch_output_list = [init_R.cpu(), init_t.cpu()]
     if save_flag:
         torch_save_result(torch_output_list)
     return torch_output_list
@@ -236,6 +228,9 @@ def compare_result(torch_out, ov_out, device, atol=1e-4, return_indices=True, to
         traceback.print_exc() 
     return compare_result
 
+def compare_result_2(torch_out, ov_out, device):
+    print(f"[Torch] infer result: \n{torch_out[:5]}")
+    print(f"[OV {device}] infer result: {ov_out[:5]}")
 
 def main():
     cfg = init()
@@ -244,7 +239,7 @@ def main():
     torch.manual_seed(cfg.rd_seed)
 
     # device setting
-    device = torch.device(cfg.device)
+    device = torch.device(cfg.device.lower())
     print(f"Using device: {device}")
 
     # model loading
@@ -275,14 +270,14 @@ def main():
                 for prefix in ('module.', 'model.', 'net.'):
                     nk = _strip_prefix(nk, prefix)
                 normalized_state[nk] = v
-            model_state = model.state_dict()
+            model_state = torch_model.state_dict()
             # filter by matching keys and shapes
             filtered_state = {k: v for k, v in normalized_state.items() if k in model_state and v.shape == model_state[k].shape}
             missing_keys = [k for k in model_state.keys() if k not in normalized_state]
             unexpected_keys = [k for k in normalized_state.keys() if k not in model_state]
             print(f"Partial checkpoint load -> matched: {len(filtered_state)}/{len(model_state)}, missing: {len(missing_keys)}, unexpected: {len(unexpected_keys)}")
             model_state.update(filtered_state)
-            model.load_state_dict(model_state, strict=False)
+            torch_model.load_state_dict(model_state, strict=False)
             print("Checkpoint loaded with partial matching")
         except Exception as e:
             print(f"Warning: Could not load checkpoint: {e}")
@@ -291,9 +286,9 @@ def main():
     model_save_path = "model_save"
     os.makedirs(model_save_path, exist_ok=True)
     onnx_pem_model_path = os.path.join(model_save_path, 'onnx_pem_sub2_model.onnx')
-    ov_pem_model_path = os.path.join(model_save_path, 'onnx_pem_sub2_model.xml')
-    ov_gpu_kernel_path = "./model/ov_pointnet2_op_mix/ov_gpu_custom_op.xml"
-    ov_extension_lib_path = './model/ov_pointnet2_op_mix/build/libopenvino_operation_extension.so'
+    ov_pem_model_path = os.path.join(model_save_path, 'ov_pem_sub2_model.xml')
+    ov_gpu_kernel_path = "./model/ov_pointnet2_op/ov_gpu_custom_op.xml"
+    ov_extension_lib_path = './model/ov_pointnet2_op/build/libopenvino_operation_extension.so'
 
     core = Core()
     core.add_extension(ov_extension_lib_path)
@@ -301,12 +296,21 @@ def main():
     # data pre-process
     torch_pem_input, \
         onnx_pem_input_name, onnx_pem_input, \
-        ov_pem_input_name, ov_pem_input = prepare_pem_data(cfg, torch_model, device)
+        ov_pem_input_name, ov_pem_input = prepare_pem_data()
 
     pem_sub2_model = OVPEM_Sub2(cfg.model)
 
     # torch model infer
     torch_output = torch_infer_pose_estimation_submodel(pem_sub2_model, torch_pem_input)
+
+    print("[IPEX Infer] Start")
+    torch_device = torch.device("xpu")
+    pem_sub2_model.to(torch_device)
+    torch_pem_input_new = []
+    for tmp_tensor in torch_pem_input:
+        torch_pem_input_new.append(tmp_tensor.to(torch_device))
+    torch_output = torch_infer_pose_estimation_submodel(pem_sub2_model, torch_pem_input_new)
+    print("[IPEX Infer] Done")
 
     # onnx model convert
     onnx_model_convert_pose_estimation_submodel(pem_sub2_model, onnx_pem_input_name, onnx_pem_input, onnx_pem_model_path)
@@ -323,7 +327,6 @@ def main():
     In actual deployment, it may consider temporarily replacing this part with torch implementation.
     '''
     ov_output_cpu = openvino_infer_pose_estimation_submodel(core, ov_pem_input, ov_pem_model_path, ov_gpu_kernel_path, ov_device)
-    ov_output_cpu = openvino_infer_pose_estimation_submodel(core, ov_pem_input, ov_pem_model_path, ov_gpu_kernel_path, ov_device)
     if DEBUG_FLAG:
         for i in range(len(ov_output_cpu)):
             print(f"=====================[{ov_device} Result Compare :The {i}th output]======================")
@@ -337,7 +340,6 @@ def main():
     [GPU infer failed] Exceeded max size of memory object allocation: requested 77446656000 bytes, but max alloc size supported by device is 24385683456 bytes.Please try to reduce batch size or use lower precision.
     Compute_coarse_Rt contains a large number of GPU-unfriendly ops, causing OOM errors. This part of the model structure should be restructured.
     '''
-    # ov_output_gpu = openvino_infer_pose_estimation_submodel(core, ov_pem_input, ov_pem_model_path, ov_gpu_kernel_path, ov_device)
     # ov_output_gpu = openvino_infer_pose_estimation_submodel(core, ov_pem_input, ov_pem_model_path, ov_gpu_kernel_path, ov_device)
     # if DEBUG_FLAG:
     #     for i in range(len(ov_output_gpu)):
@@ -370,6 +372,11 @@ if __name__ == "__main__":
     This submodel includes: 
         CoarsePointMatching.compute_coarse_Rt.
     Currently, the CPU infer pass, GPU infer pass, and Hetero infer pass failed.
+    Result compare(with pytorch), 
+      - CPU infer pass,  accuracy pass
+      - GPU infer pass, 
+      - Hetero infer failed.
+
     Due to the poor performance of the current version, 
     Consider using Torch for actual deployment.
     '''

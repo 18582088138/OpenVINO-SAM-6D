@@ -66,6 +66,10 @@ class FinePointMatching(nn.Module):
                     self.cfg.temp,
                     self.cfg.normalize_feat
                 ))
+        
+        # fine_Rt_atten = atten_list[-1]
+        # fine_Rt_model_pts = model / (radius.reshape(-1, 1, 1) + 1e-6)
+        # return fine_Rt_atten, fine_Rt_model_pts
             
         pred_R, pred_t, pred_pose_score = compute_fine_Rt(
             atten_list[-1], p1, p2,

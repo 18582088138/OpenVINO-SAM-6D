@@ -1,25 +1,16 @@
-from run_inference_custom_pytorch import *
-
 import argparse
+import time
 import os
 import sys
-from PIL import Image
-import os.path as osp
-import numpy as np
 import random
 import importlib
-import json
-import cv2
 
 import torch
 import torch.nn as nn
-import torchvision.transforms as transforms
-
 import openvino as ov
 from openvino import Core
 
-import pycocotools.mask as cocomask
-import trimesh
+from run_inference_custom_openvino_gpu import *
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -131,7 +122,7 @@ def openvino_model_convert_feature_extraction_submodel(core, ov_fe_input_name, o
                                     extension=ov_extension_lib_path,
                                     )
     compiled_model = core.compile_model(ov_fe_model, 'CPU')
-    ov.save_model(ov_fe_model, ov_fe_model_path)
+    ov.save_model(ov_fe_model, ov_fe_model_path, compress_to_fp16=False)
     print(f"[OpenVINO] feature extraction submodel convert success: {ov_fe_model_path}")
 
 def openvino_infer_feature_extraction_submodel(core, ov_fe_input, ov_fe_model_path, ov_gpu_kernel_path, device):
@@ -266,7 +257,7 @@ def main():
     torch.manual_seed(cfg.rd_seed)
 
     # device setting
-    device = torch.device(cfg.device)
+    device = torch.device(cfg.device.lower())
     print(f"Using device: {device}")
 
     # model loading
@@ -313,10 +304,10 @@ def main():
 
     model_save_path = "model_save"
     os.makedirs(model_save_path, exist_ok=True)
-    onnx_fe_model_path = os.path.join(model_save_path, 'onnx_fe_model_mix.onnx')
-    ov_fe_model_path = os.path.join(model_save_path, 'ov_fe_model_mix.xml')
-    ov_gpu_kernel_path = "./model/ov_pointnet2_op_mix/ov_gpu_custom_op.xml"
-    ov_extension_lib_path = './model/ov_pointnet2_op_mix/build/libopenvino_operation_extension.so'
+    onnx_fe_model_path = os.path.join(model_save_path, 'onnx_fe_model.onnx')
+    ov_fe_model_path = os.path.join(model_save_path, 'ov_fe_model.xml')
+    ov_gpu_kernel_path = "./model/ov_pointnet2_op/ov_gpu_custom_op.xml"
+    ov_extension_lib_path = './model/ov_pointnet2_op/build/libopenvino_operation_extension.so'
 
     core = Core()
     core.add_extension(ov_extension_lib_path)
@@ -335,8 +326,8 @@ def main():
     [Draft] Using batch type output instead of list input can effectively improve the performance of FE model
     Currently, there are some differences in the output results of get_obj_feats batch and list.
     """
-    # torch_output = torch_infer_feature_extraction_submodel_list(model, torch_fe_input)
-    torch_output = torch_infer_feature_extraction_submodel_batched(model, onnx_fe_input)
+    torch_output = torch_infer_feature_extraction_submodel_list(model, torch_fe_input)
+    # torch_output = torch_infer_feature_extraction_submodel_batched(model, onnx_fe_input)
 
     # openvino model cpu infer
     ov_device = "CPU"
@@ -349,9 +340,9 @@ def main():
 
     # openvino model gpu infer
     ov_device = "GPU"
-    DEBUG_FLAG = False # True / False
+    DEBUG_FLAG = True # True / False
     ov_output_gpu = openvino_infer_feature_extraction_submodel(core, ov_fe_input, ov_fe_model_path, ov_gpu_kernel_path, ov_device)
-    ov_output_gpu = openvino_infer_feature_extraction_submodel(core, ov_fe_input, ov_fe_model_path, ov_gpu_kernel_path, ov_device)
+    # ov_output_gpu = openvino_infer_feature_extraction_submodel(core, ov_fe_input, ov_fe_model_path, ov_gpu_kernel_path, ov_device)
     if DEBUG_FLAG:
         for i in range(len(ov_output_gpu)):
             print(f"=====================[{ov_device} Result Compare :The {i}th output]======================")

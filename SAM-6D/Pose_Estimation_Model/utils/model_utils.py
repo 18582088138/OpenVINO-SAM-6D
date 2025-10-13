@@ -51,17 +51,33 @@ def interpolate_pos_embed(model, checkpoint_model):
             checkpoint_model['pos_embed'] = new_pos_embed
 
 
+# def sample_pts_feats(pts, feats, npoint=2048, return_index=False):
+#     '''
+#         pts: B*N*3
+#         feats: B*N*C
+#     '''
+#     npoint_tensor = torch.ones(npoint, dtype=torch.int32)
+#     sample_idx = furthest_point_sample(pts, npoint_tensor) # [check pass] sample_idx
+#     pts = gather_operation(pts.transpose(1,2).contiguous(), sample_idx)
+#     pts = pts.transpose(1,2).contiguous()
+#     feats = gather_operation(feats.transpose(1,2).contiguous(), sample_idx)
+#     feats = feats.transpose(1,2).contiguous()
+#     if return_index:
+#         return pts, feats, sample_idx
+#     else:
+#         return pts, feats
+
 def sample_pts_feats(pts, feats, npoint=2048, return_index=False):
     '''
         pts: B*N*3
         feats: B*N*C
     '''
     npoint_tensor = torch.ones(npoint, dtype=torch.int32)
-    sample_idx = furthest_point_sample(pts, npoint_tensor)
+    sample_idx = furthest_point_sample(pts, npoint_tensor) 
     pts = gather_operation(pts.transpose(1,2).contiguous(), sample_idx)
-    pts = pts.transpose(1,2).contiguous()
+    pts = pts.transpose(1,2)
     feats = gather_operation(feats.transpose(1,2).contiguous(), sample_idx)
-    feats = feats.transpose(1,2).contiguous()
+    feats = feats.transpose(1,2)
     if return_index:
         return pts, feats, sample_idx
     else:
@@ -385,16 +401,16 @@ def weighted_procrustes(
     # Exporting the operator 'aten::svd' to ONNX opset version 20 is not supported
     # Replace torch.svd with ONNX compatible implementation
     '''
-    # U, _, V = CustomSVD.apply(H)
+    U, _, V = CustomSVD.apply(H)
     '''
     Currently, the OpenVINO GPU opset implementation for SVD is not complete, 
     The GPU custom op is still used as the SVD implementation method.
     Since the GPU custom op only supports one outpur, svd_u and svd_v are needed to replace svd
     '''
-    custom_svd_u = CustomSVDu.apply
-    custom_svd_v = CustomSVDv.apply
-    U = custom_svd_u(H)
-    V = custom_svd_v(H)
+    # custom_svd_u = CustomSVDu.apply
+    # custom_svd_v = CustomSVDv.apply
+    # U = custom_svd_u(H)
+    # V = custom_svd_v(H)
     
     Ut, V = U.transpose(1, 2), V
     eye = torch.eye(3).unsqueeze(0).repeat(batch_size, 1, 1).to(src_points.device)

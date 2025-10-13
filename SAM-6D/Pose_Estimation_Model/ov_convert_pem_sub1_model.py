@@ -21,41 +21,41 @@ sys.path.append(os.path.join(ROOT_DIR, 'utils'))
 sys.path.append(os.path.join(ROOT_DIR, 'model'))
 sys.path.append(os.path.join(BASE_DIR, 'model', 'pointnet2'))
 
-from model.feature_extraction import ViTEncoder
-from model.ov_coarse_point_matching import CoarsePointMatching
-from model.transformer import GeometricStructureEmbedding
 from utils.model_utils import sample_pts_feats
-from run_inference_custom_pytorch import *
+# from run_inference_custom_pytorch import *
+from run_inference_custom_openvino_gpu import *
 
 DEBUG_FLAG = True
 
 class OVPEM_Sub1(nn.Module):
-    def __init__(self, cfg, npoint=2048):
+    def __init__(self, cfg, model, npoint=2048):
         super(OVPEM_Sub1, self).__init__()
         self.coarse_npoint = cfg.coarse_npoint
         self.fine_npoint = cfg.fine_npoint
-        self.feature_extraction = ViTEncoder(cfg.feature_extraction, self.fine_npoint)
-        self.geo_embedding = GeometricStructureEmbedding(cfg.geo_embedding)
-        self.coarse_point_matching = CoarsePointMatching(cfg.coarse_point_matching)
+        self.model = model
 
     def forward(self, pts,  rgb, rgb_choose, 
                     model, dense_po, dense_fo):
-        # 1. get dense features
-        dense_pm, dense_fm, dense_po_out, dense_fo_out, radius = self.feature_extraction(pts, rgb, rgb_choose, dense_po, dense_fo)
+        # [pass] 1. get dense features
+        dense_pm, dense_fm, dense_po_out, dense_fo_out, radius = self.model.feature_extraction(pts, rgb, rgb_choose, dense_po, dense_fo)
 
-        # 2. sample sparse features
+        # [pass] 2. sample sparse features
         bg_point = torch.ones(dense_pm.size(0),1,3).float().to(dense_pm.device) * 100
 
+        # 1th-sparse_pm, 13th-sparse_fm, 7th-fps_idx_m
         sparse_pm, sparse_fm, fps_idx_m = sample_pts_feats(dense_pm, dense_fm, self.coarse_npoint, return_index=True)
 
         # self.geo_embedding in ov model with error result -> -nan
-        geo_embedding_m = self.geo_embedding(torch.cat([bg_point, sparse_pm], dim=1))
+        # 6th-geo_embedding_m
+        geo_embedding_m = self.model.geo_embedding(torch.cat([bg_point, sparse_pm], dim=1))
 
         sparse_po, sparse_fo, fps_idx_o = sample_pts_feats(dense_po_out, dense_fo_out, self.coarse_npoint, return_index=True)
         
-        geo_embedding_o = self.geo_embedding(torch.cat([bg_point, sparse_po], dim=1))
+        # 10th-geo_embedding_o
+        geo_embedding_o = self.model.geo_embedding(torch.cat([bg_point, sparse_po], dim=1))
 
-        coarse_Rt_atten, coarse_Rt_model_pts = self.coarse_point_matching(
+        # 0th-coarse_Rt_atten
+        coarse_Rt_atten, coarse_Rt_model_pts = self.model.coarse_point_matching(
             sparse_pm, sparse_fm, geo_embedding_m,
             sparse_po, sparse_fo, geo_embedding_o,
             radius, model
@@ -68,7 +68,7 @@ class OVPEM_Sub1(nn.Module):
 
         return coarse_Rt_atten, sparse_pm, sparse_po, coarse_Rt_model_pts, \
                dense_pm, dense_fm, geo_embedding_m, fps_idx_m, \
-               dense_po_out, dense_fo_out, geo_embedding_o, fps_idx_o
+               dense_po_out, dense_fo_out, geo_embedding_o, fps_idx_o, radius
 
 def prepare_pem_data(cfg, torch_model, device, npoint=None):
     tem_path = os.path.join(cfg.output_dir, 'templates')
@@ -102,11 +102,15 @@ def prepare_pem_data(cfg, torch_model, device, npoint=None):
                            "dense_po", 
                            "dense_fo"]
 
+    onnx_pem_output_name = ["coarse_Rt_atten", "sparse_pm", "sparse_po", "coarse_Rt_model_pts", \
+               "dense_pm", "dense_fm", "geo_embedding_m", "fps_idx_m", \
+               "dense_po_out", "dense_fo_out", "geo_embedding_o", "fps_idx_o", "radius"]
+
     onnx_pem_input = (
         input_data['pts'], 
         input_data['rgb'], 
         input_data['rgb_choose'], 
-      input_data['model'], 
+        input_data['model'], 
         input_data['dense_po'], 
         input_data['dense_fo'],
         )
@@ -120,6 +124,11 @@ def prepare_pem_data(cfg, torch_model, device, npoint=None):
                         "dense_po":[batch_size,2048,3], 
                         "dense_fo":[batch_size,2048,256],
                         }
+
+    ov_pem_output_name = ["coarse_Rt_atten", "sparse_pm", "sparse_po", "coarse_Rt_model_pts", \
+               "dense_pm", "dense_fm", "geo_embedding_m", "fps_idx_m", \
+               "dense_po_out", "dense_fo_out", "geo_embedding_o", "fps_idx_o", "radius"]
+
     ov_pem_input = {
         "pts": input_data['pts'],
         "rgb": input_data['rgb'],
@@ -144,6 +153,7 @@ def onnx_model_convert_pose_estimation_submodel(model, onnx_pem_input_name, onnx
             opset_version=20,
             operator_export_type=torch.onnx.OperatorExportTypes.ONNX_ATEN_FALLBACK,
             input_names=onnx_pem_input_name,
+            # output_names=onnx_pem_output_name,
             dynamic_axes={k: {0: "batch"} for k in onnx_pem_input_name},
             do_constant_folding=False,
             verbose=False,
@@ -156,13 +166,15 @@ def onnx_model_convert_pose_estimation_submodel(model, onnx_pem_input_name, onnx
         print(f"[ONNX] export failed : {e}")
 
 def openvino_model_convert_pose_estimation_submodel(core, ov_pem_input_name, ov_pem_input, onnx_pem_model_path, ov_pem_model_path, ov_extension_lib_path):
+    
     ov_pem_model = ov.convert_model(onnx_pem_model_path, 
                                     input=ov_pem_input_name,
+                                    # output=ov_pem_output_name,
                                     example_input=ov_pem_input,
                                     extension=ov_extension_lib_path,
                                     )
     compiled_model = core.compile_model(ov_pem_model, 'CPU')
-    ov.save_model(ov_pem_model, ov_pem_model_path)
+    ov.save_model(ov_pem_model, ov_pem_model_path, compress_to_fp16=False)
     print(f"[OpenVINO] pose estimation submodel convert success: {ov_pem_model_path}")
 
 def openvino_infer_pose_estimation_submodel(core, ov_fe_input, ov_fe_model_path, ov_gpu_kernel_path, device):
@@ -192,12 +204,12 @@ def torch_infer_pose_estimation_submodel(model, input_data, save_flag=True):
     with torch.no_grad():
         coarse_Rt_atten, sparse_pm, sparse_po, coarse_Rt_model_pts, \
                dense_pm, dense_fm, geo_embedding_m, fps_idx_m, \
-               dense_po_out, dense_fo_out, geo_embedding_o, fps_idx_o = model(*input_data)
+               dense_po_out, dense_fo_out, geo_embedding_o, fps_idx_o, radius = model(*input_data)
     fe_time = time.time() - time_start
     print(f"[PyTorch] feature extraction inference time: {fe_time*1000:.2f} ms")
     torch_output_list = [coarse_Rt_atten, sparse_pm, sparse_po, coarse_Rt_model_pts, \
                dense_pm, dense_fm, geo_embedding_m, fps_idx_m, \
-               dense_po_out, dense_fo_out, geo_embedding_o, fps_idx_o]
+               dense_po_out, dense_fo_out, geo_embedding_o, fps_idx_o, radius]
     if save_flag:
         torch_save_result(torch_output_list)
     return torch_output_list
@@ -216,6 +228,7 @@ def torch_save_result(torch_output_list):
     np.save("output/dense_fo_out.npy", torch_output_list[9])
     np.save("output/geo_embedding_o.npy", torch_output_list[10])
     np.save("output/fps_idx_o.npy", torch_output_list[11])
+    np.save("output/radius.npy", torch_output_list[12])
     for i in range(len(torch_output_list)):
         print(f"[Torch Debug] {i}th output :", torch_output_list[i].shape, torch_output_list[i].type(), torch_output_list[i].dtype)
     
@@ -307,7 +320,7 @@ def main():
     torch.manual_seed(cfg.rd_seed)
 
     # device setting
-    device = torch.device(cfg.device)
+    device = torch.device(cfg.device.lower())
     print(f"Using device: {device}")
 
     # model loading
@@ -338,14 +351,14 @@ def main():
                 for prefix in ('module.', 'model.', 'net.'):
                     nk = _strip_prefix(nk, prefix)
                 normalized_state[nk] = v
-            model_state = model.state_dict()
+            model_state = torch_model.state_dict()
             # filter by matching keys and shapes
             filtered_state = {k: v for k, v in normalized_state.items() if k in model_state and v.shape == model_state[k].shape}
             missing_keys = [k for k in model_state.keys() if k not in normalized_state]
             unexpected_keys = [k for k in normalized_state.keys() if k not in model_state]
             print(f"Partial checkpoint load -> matched: {len(filtered_state)}/{len(model_state)}, missing: {len(missing_keys)}, unexpected: {len(unexpected_keys)}")
             model_state.update(filtered_state)
-            model.load_state_dict(model_state, strict=False)
+            torch_model.load_state_dict(model_state, strict=False)
             print("Checkpoint loaded with partial matching")
         except Exception as e:
             print(f"Warning: Could not load checkpoint: {e}")
@@ -354,9 +367,9 @@ def main():
     model_save_path = "model_save"
     os.makedirs(model_save_path, exist_ok=True)
     onnx_pem_model_path = os.path.join(model_save_path, 'onnx_pem_sub1_model.onnx')
-    ov_pem_model_path = os.path.join(model_save_path, 'onnx_pem_sub1_model.xml')
-    ov_gpu_kernel_path = "./model/ov_pointnet2_op_mix/ov_gpu_custom_op.xml"
-    ov_extension_lib_path = './model/ov_pointnet2_op_mix/build/libopenvino_operation_extension.so'
+    ov_pem_model_path = os.path.join(model_save_path, 'ov_pem_sub1_model.xml')
+    ov_gpu_kernel_path = "./model/ov_pointnet2_op/ov_gpu_custom_op.xml"
+    ov_extension_lib_path = './model/ov_pointnet2_op/build/libopenvino_operation_extension.so'
 
     core = Core()
     core.add_extension(ov_extension_lib_path)
@@ -364,9 +377,9 @@ def main():
     # data pre-process
     torch_pem_input, \
         onnx_pem_input_name, onnx_pem_input, \
-        ov_pem_input_name, ov_pem_input = prepare_pem_data(cfg, torch_model, device)
+        ov_pem_input_name,  ov_pem_input = prepare_pem_data(cfg, torch_model, device)
 
-    pem_sub_model_1 = OVPEM_Sub1(cfg.model)
+    pem_sub_model_1 = OVPEM_Sub1(cfg.model, model=torch_model)
 
     # torch model infer
     torch_output = torch_infer_pose_estimation_submodel(pem_sub_model_1, torch_pem_input)
@@ -388,7 +401,7 @@ def main():
 
     # # openvino model gpu infer
     ov_device = "GPU"
-    DEBUG_FLAG = False # True / False
+    DEBUG_FLAG = True # True / False
     ov_output_gpu = openvino_infer_pose_estimation_submodel(core, ov_pem_input, ov_pem_model_path, ov_gpu_kernel_path, ov_device)
     ov_output_gpu = openvino_infer_pose_estimation_submodel(core, ov_pem_input, ov_pem_model_path, ov_gpu_kernel_path, ov_device)
     if DEBUG_FLAG:

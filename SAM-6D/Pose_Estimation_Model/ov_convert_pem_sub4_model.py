@@ -16,9 +16,6 @@ import torchvision.transforms as transforms
 import openvino as ov
 from openvino import Core
 
-import pycocotools.mask as cocomask
-import trimesh
-
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # ROOT_DIR = os.path.join(BASE_DIR, '..', 'Pose_Estimation_Model')
@@ -30,7 +27,8 @@ sys.path.append(os.path.join(ROOT_DIR, 'model'))
 sys.path.append(os.path.join(BASE_DIR, 'model', 'pointnet2'))
 
 from utils.model_utils import compute_fine_Rt
-from run_inference_custom_pytorch import *
+# from run_inference_custom_pytorch import *
+from run_inference_custom_openvino_gpu import *
 
 class OVPEM_Sub4(nn.Module):
     def __init__(self, cfg, npoint=2048):
@@ -48,7 +46,8 @@ def prepare_pem_data(cfg, torch_model, device, npoint=None):
     dense_pm_file_path = "output/dense_pm.npy"
     dense_po_out_file_path = "output/dense_po_out.npy"
     fine_Rt_model_pts_file_path= "output/fine_Rt_model_pts.npy"
-    if os.path.exists(fine_Rt_atten_file_path):
+    # if os.path.exists(fine_Rt_atten_file_path):
+    if False:
         fine_Rt_atten = torch.from_numpy(np.load(fine_Rt_atten_file_path))
         dense_pm = torch.from_numpy(np.load(dense_pm_file_path))
         dense_po_out = torch.from_numpy(np.load(dense_po_out_file_path)) 
@@ -112,7 +111,7 @@ def openvino_model_convert_pose_estimation_submodel(core, ov_pem_input_name, ov_
                                     extension=ov_extension_lib_path,
                                     )
     compiled_model = core.compile_model(ov_pem_model, 'CPU')
-    ov.save_model(ov_pem_model, ov_pem_model_path)
+    ov.save_model(ov_pem_model, ov_pem_model_path, compress_to_fp16=False)
     print(f"[OpenVINO] pose estimation submodel convert success: {ov_pem_model_path}")
 
 def openvino_infer_pose_estimation_submodel(core, ov_fe_input, ov_fe_model_path, ov_gpu_kernel_path, device):
@@ -244,7 +243,7 @@ def main():
     torch.manual_seed(cfg.rd_seed)
 
     # device setting
-    device = torch.device(cfg.device)
+    device = torch.device(cfg.device.lower())
     print(f"Using device: {device}")
 
     # model loading
@@ -275,14 +274,14 @@ def main():
                 for prefix in ('module.', 'model.', 'net.'):
                     nk = _strip_prefix(nk, prefix)
                 normalized_state[nk] = v
-            model_state = model.state_dict()
+            model_state = torch_model.state_dict()
             # filter by matching keys and shapes
             filtered_state = {k: v for k, v in normalized_state.items() if k in model_state and v.shape == model_state[k].shape}
             missing_keys = [k for k in model_state.keys() if k not in normalized_state]
             unexpected_keys = [k for k in normalized_state.keys() if k not in model_state]
             print(f"Partial checkpoint load -> matched: {len(filtered_state)}/{len(model_state)}, missing: {len(missing_keys)}, unexpected: {len(unexpected_keys)}")
             model_state.update(filtered_state)
-            model.load_state_dict(model_state, strict=False)
+            torch_model.load_state_dict(model_state, strict=False)
             print("Checkpoint loaded with partial matching")
         except Exception as e:
             print(f"Warning: Could not load checkpoint: {e}")
@@ -290,10 +289,10 @@ def main():
 
     model_save_path = "model_save"
     os.makedirs(model_save_path, exist_ok=True)
-    onnx_pem_model_path = os.path.join(model_save_path, 'onnx_pem_sub2_model.onnx')
-    ov_pem_model_path = os.path.join(model_save_path, 'onnx_pem_sub2_model.xml')
-    ov_gpu_kernel_path = "./model/ov_pointnet2_op_mix/ov_gpu_custom_op.xml"
-    ov_extension_lib_path = './model/ov_pointnet2_op_mix/build/libopenvino_operation_extension.so'
+    onnx_pem_model_path = os.path.join(model_save_path, 'onnx_pem_sub4_model.onnx')
+    ov_pem_model_path = os.path.join(model_save_path, 'ov_pem_sub4_model.xml')
+    ov_gpu_kernel_path = "./model/ov_pointnet2_op/ov_gpu_custom_op.xml"
+    ov_extension_lib_path = './model/ov_pointnet2_op/build/libopenvino_operation_extension.so'
 
     core = Core()
     core.add_extension(ov_extension_lib_path)
@@ -316,7 +315,7 @@ def main():
    
     # openvino model cpu infer
     ov_device = "CPU"
-    DEBUG_FLAG = False # True / False
+    DEBUG_FLAG = True # True / False
     ov_output_cpu = openvino_infer_pose_estimation_submodel(core, ov_pem_input, ov_pem_model_path, ov_gpu_kernel_path, ov_device)
     if DEBUG_FLAG:
         for i in range(len(ov_output_cpu)):
@@ -360,7 +359,10 @@ if __name__ == "__main__":
     """
     This submodel includes: 
         CoarsePointMatching.compute_coarse_Rt.
-    Currently, the CPU infer pass, GPU infer failed, and Hetero infer pass failed.
+    Result compare(with pytorch), 
+      - CPU infer pass,  accuracy pass
+      - GPU infer failed, 
+      - Hetero infer failed.
 
     Consider using OV CPU for actual deployment.
     """
