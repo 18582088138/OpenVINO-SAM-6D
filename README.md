@@ -63,6 +63,11 @@ export OUTPUT_DIR=$PROJECT_ROOT/SAM-6D/Data/Example/outputs         # path to a 
 # run inference
 cd SAM-6D
 sh demo.sh
+
+# [Issue Fix] Imageio: 'libfreeimage-3.16.0-linux64.so' was not found on your computer; 
+sudo apt-get update
+sudo apt-get install libfreeimage-dev
+
 ```
 
 ### 3. (Optinal) OpenVINO enable SAM6D PEM on Intel CPU
