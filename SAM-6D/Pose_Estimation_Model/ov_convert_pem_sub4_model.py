@@ -46,8 +46,8 @@ def prepare_pem_data(cfg, torch_model, device, npoint=None):
     dense_pm_file_path = "output/dense_pm.npy"
     dense_po_out_file_path = "output/dense_po_out.npy"
     fine_Rt_model_pts_file_path= "output/fine_Rt_model_pts.npy"
-    # if os.path.exists(fine_Rt_atten_file_path):
-    if False:
+    flag_real_input = False
+    if flag_real_input:
         fine_Rt_atten = torch.from_numpy(np.load(fine_Rt_atten_file_path))
         dense_pm = torch.from_numpy(np.load(dense_pm_file_path))
         dense_po_out = torch.from_numpy(np.load(dense_po_out_file_path)) 

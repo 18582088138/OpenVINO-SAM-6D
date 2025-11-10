@@ -64,7 +64,8 @@ def prepare_pem_data(cfg, torch_model, device, npoint=None):
     init_R_file_path="output/init_R.npy"
     init_t_file_path="output/init_t.npy"
     # if False:
-    if os.path.exists(dense_pm_file_path) & os.path.exists(init_R_file_path):
+    flag_real_input = False
+    if flag_real_input:
         dense_pm = torch.from_numpy(np.load(dense_pm_file_path))
         dense_fm = torch.from_numpy(np.load(dense_fm_file_path))
         geo_embedding_m = torch.from_numpy(np.load(geo_embedding_m_file_path))

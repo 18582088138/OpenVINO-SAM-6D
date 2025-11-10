@@ -41,7 +41,8 @@ def prepare_pem_data():
     sparse_pm_file_path = "output/sparse_pm.npy"
     sparse_po_file_path = "output/sparse_po.npy"
     coarse_Rt_model_pts_file_path= "output/coarse_Rt_model_pts.npy"
-    if os.path.exists(coarse_Rt_atten_file_path):
+    flag_real_input = False
+    if flag_real_input:
         coarse_Rt_atten = torch.from_numpy(np.load(coarse_Rt_atten_file_path))
         sparse_pm = torch.from_numpy(np.load(sparse_pm_file_path))
         sparse_po = torch.from_numpy(np.load(sparse_po_file_path)) 
@@ -303,14 +304,23 @@ def main():
     # torch model infer
     torch_output = torch_infer_pose_estimation_submodel(pem_sub2_model, torch_pem_input)
 
-    print("[IPEX Infer] Start")
-    torch_device = torch.device("xpu")
+    # print("[IPEX Infer] Start")
+    # torch_device = torch.device("xpu")
+    # pem_sub2_model.to(torch_device)
+    # torch_pem_input_new = []
+    # for tmp_tensor in torch_pem_input:
+    #     torch_pem_input_new.append(tmp_tensor.to(torch_device))
+    # torch_output = torch_infer_pose_estimation_submodel(pem_sub2_model, torch_pem_input_new)
+    # print("[IPEX Infer] Done")
+
+    print("[Torch Infer] Start")
+    torch_device = torch.device("cpu")
     pem_sub2_model.to(torch_device)
     torch_pem_input_new = []
     for tmp_tensor in torch_pem_input:
         torch_pem_input_new.append(tmp_tensor.to(torch_device))
     torch_output = torch_infer_pose_estimation_submodel(pem_sub2_model, torch_pem_input_new)
-    print("[IPEX Infer] Done")
+    print("[Torch Infer] Done")
 
     # onnx model convert
     onnx_model_convert_pose_estimation_submodel(pem_sub2_model, onnx_pem_input_name, onnx_pem_input, onnx_pem_model_path)
