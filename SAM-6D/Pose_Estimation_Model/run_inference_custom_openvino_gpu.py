@@ -51,6 +51,7 @@ import numpy as np
 import time
 import json
 import cv2
+import heapq
 
 import torch
 import torch.nn as nn
@@ -76,7 +77,8 @@ sys.path.append(os.path.join(ROOT_DIR, 'model'))
 sys.path.append(os.path.join(BASE_DIR, 'model', 'pointnet2'))
 
 from utils.model_utils import compute_coarse_Rt, compute_fine_Rt
-# from run_inference_custom_pytorch import *
+
+first_run = True
 
 def get_parser():
     parser = argparse.ArgumentParser(description="[OpenVINO] Pose Estimation (CPU Version)")
@@ -175,216 +177,10 @@ def visualize(rgb, pred_rot, pred_trans, model_points, K, save_path):
     concat.paste(prediction, (img.shape[1], 0))
     return concat
 
-def get_templates_np(path, cfg):
-    """
-    Load multiple rendered templates for the CAD model from disk using numpy.
-    Args:
-        path: str, directory containing template files
-        cfg: config object, must have n_template_view, img_size, n_sample_template_point
-    Returns:
-        all_tem: list[np.ndarray], each (1, 3, img_size, img_size)
-        all_tem_pts: list[np.ndarray], each (1, n_sample_template_point, 3)
-        all_tem_choose: list[np.ndarray], each (1, n_sample_template_point)
-    """
-    n_template_view = cfg.n_template_view
-    all_tem = []
-    all_tem_choose = []
-    all_tem_pts = []
-
-    total_nView = 42
-    for v in range(n_template_view):
-        i = int(total_nView / n_template_view * v)
-        tem, tem_choose, tem_pts = _get_template_np(path, cfg, i)
-        all_tem.append(np.expand_dims(tem, axis=0))  # (1, 3, img_size, img_size)
-        all_tem_choose.append(np.expand_dims(tem_choose, axis=0))  # (1, n_sample_template_point)
-        all_tem_pts.append(np.expand_dims(tem_pts, axis=0))  # (1, n_sample_template_point, 3)
-    return all_tem, all_tem_pts, all_tem_choose
-
-def _get_template_np(path, cfg, tem_index=1):
-    """
-    Load a single template (rendered view) for the CAD model using numpy.
-    Args:
-        path: str, directory containing template files
-        cfg: config object, must have img_size, n_sample_template_point, rgb_mask_flag
-        tem_index: int, template index
-    Returns:
-        rgb: np.ndarray, shape (3, img_size, img_size), normalized RGB image
-        rgb_choose: np.ndarray, shape (n_sample_template_point,), selected pixel indices
-        xyz: np.ndarray, shape (n_sample_template_point, 3), 3D points (meters)
-    """
-    rgb_path = os.path.join(path, 'rgb_'+str(tem_index)+'.png')
-    mask_path = os.path.join(path, 'mask_'+str(tem_index)+'.png')
-    xyz_path = os.path.join(path, 'xyz_'+str(tem_index)+'.npy')
-
-    # Load data using numpy/cv2
-    rgb = cv2.imread(rgb_path, cv2.IMREAD_UNCHANGED).astype(np.uint8)
-    xyz = np.load(xyz_path).astype(np.float32) / 1000.0  # Convert mm to meters
-    mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE).astype(np.uint8) == 255
-
-    # Get bounding box
-    rows = np.any(mask, axis=1)
-    cols = np.any(mask, axis=0)
-    y1, y2 = np.where(rows)[0][[0, -1]]
-    x1, x2 = np.where(cols)[0][[0, -1]]
-    mask = mask[y1:y2, x1:x2]
-
-    # Process RGB image
-    rgb = rgb[:,:,::-1][y1:y2, x1:x2, :]  # BGR to RGB
-    if cfg.rgb_mask_flag:
-        rgb = rgb * (mask[:,:,None]>0).astype(np.uint8)
-
-    # Resize RGB image
-    rgb = cv2.resize(rgb, (cfg.img_size, cfg.img_size), interpolation=cv2.INTER_LINEAR)
-    
-    # Normalize RGB (same as torchvision transforms)
-    rgb = rgb.astype(np.float32) / 255.0
-    rgb = (rgb - np.array([0.485, 0.456, 0.406])) / np.array([0.229, 0.224, 0.225])
-    rgb = rgb.transpose(2, 0, 1)  # (H, W, C) -> (C, H, W)
-
-    # Process point cloud
-    xyz = xyz[y1:y2, x1:x2, :].reshape((-1, 3))
-
-    # Sample points
-    choose = (mask>0).astype(np.float32).flatten().nonzero()[0]
-    if len(choose) <= cfg.n_sample_template_point:
-        choose_idx = np.random.choice(np.arange(len(choose)), cfg.n_sample_template_point)
-    else:
-        choose_idx = np.random.choice(np.arange(len(choose)), cfg.n_sample_template_point, replace=False)
-    choose = choose[choose_idx]
-    xyz = xyz[choose, :]
-
-    # Calculate RGB choose indices
-    h, w = y2 - y1, x2 - x1
-    scale_h, scale_w = cfg.img_size / h, cfg.img_size / w
-    
-    choose_y = (choose // w).astype(np.float32) * scale_h
-    choose_x = (choose % w).astype(np.float32) * scale_w
-    rgb_choose = (choose_y * cfg.img_size + choose_x).astype(np.int32)
-
-    return rgb, rgb_choose, xyz
-
-def get_test_data_np(rgb_path, depth_path, cam_path, cad_path, seg_path, det_score_thresh, cfg):
-    """
-    Prepare test data for pose estimation using numpy.
-    Args:
-        rgb_path: str, path to RGB image
-        depth_path: str, path to depth image
-        cam_path: str, path to camera intrinsics (json)
-        cad_path: str, path to CAD model
-        seg_path: str, path to segmentation results (json)
-        det_score_thresh: float, detection score threshold
-        cfg: config object, must have n_sample_observed_point, img_size, rgb_mask_flag
-    Returns:
-        ret_dict: dict with keys:
-            'pts': np.ndarray, (N, n_sample_observed_point, 3)
-            'rgb': np.ndarray, (N, 3, img_size, img_size)
-            'rgb_choose': np.ndarray, (N, n_sample_observed_point)
-            'score': np.ndarray, (N,)
-            'model': np.ndarray, (N, n_sample_model_point, 3)
-            'K': np.ndarray, (N, 3, 3)
-        whole_image: np.ndarray, (H, W, 3), original RGB image
-        whole_pts: np.ndarray, (H*W, 3), full point cloud
-        model_points: np.ndarray, (n_sample_model_point, 3)
-        all_dets: list[dict], detection info
-    """
-    dets = []
-    with open(seg_path) as f:
-        dets_ = json.load(f) # keys: scene_id, image_id, category_id, bbox, score, segmentation
-    for det in dets_:
-        if det['score'] > det_score_thresh:
-            dets.append(det)
-    del dets_
-
-    cam_info = json.load(open(cam_path))
-    K = np.array(cam_info['cam_K']).reshape(3, 3)
-
-    whole_image = load_im(rgb_path).astype(np.uint8)
-    if len(whole_image.shape)==2:
-        whole_image = np.concatenate([whole_image[:,:,None], whole_image[:,:,None], whole_image[:,:,None]], axis=2)
-    whole_depth = load_im(depth_path).astype(np.float32) * cam_info['depth_scale'] / 1000.0
-    whole_pts = get_point_cloud_from_depth(whole_depth, K)
-
-    mesh = trimesh.load_mesh(cad_path)
-    model_points = mesh.sample(cfg.n_sample_model_point).astype(np.float32) / 1000.0
-    radius = np.max(np.linalg.norm(model_points, axis=1))
-
-    all_rgb = []
-    all_cloud = []
-    all_rgb_choose = []
-    all_score = []
-    all_dets = []
-    for inst in dets:
-        seg = inst['segmentation']
-        score = inst['score']
-
-        # mask
-        h,w = seg['size']
-        try:
-            rle = cocomask.frPyObjects(seg, h, w)
-        except:
-            rle = seg
-        mask = cocomask.decode(rle)
-        mask = np.logical_and(mask > 0, whole_depth > 0)
-        if np.sum(mask) > 32:
-            bbox = get_bbox(mask)
-            y1, y2, x1, x2 = bbox
-        else:
-            continue
-        mask = mask[y1:y2, x1:x2]
-        choose = mask.astype(np.float32).flatten().nonzero()[0]
-
-        # pts
-        cloud = whole_pts.copy()[y1:y2, x1:x2, :].reshape(-1, 3)[choose, :]
-        center = np.mean(cloud, axis=0)
-        tmp_cloud = cloud - center[None, :]
-        flag = np.linalg.norm(tmp_cloud, axis=1) < radius * 1.2
-        if np.sum(flag) < 4:
-            continue
-        choose = choose[flag]
-        cloud = cloud[flag]
-
-        if len(choose) <= cfg.n_sample_observed_point:
-            choose_idx = np.random.choice(np.arange(len(choose)), cfg.n_sample_observed_point)
-        else:
-            choose_idx = np.random.choice(np.arange(len(choose)), cfg.n_sample_observed_point, replace=False)
-        choose = choose[choose_idx]
-        cloud = cloud[choose_idx]
-
-        # rgb
-        rgb = whole_image.copy()[y1:y2, x1:x2, :][:,:,::-1]
-        if cfg.rgb_mask_flag:
-            rgb = rgb * (mask[:,:,None]>0).astype(np.uint8)
-        rgb = cv2.resize(rgb, (cfg.img_size, cfg.img_size), interpolation=cv2.INTER_LINEAR)
-        
-        # Normalize RGB (same as torchvision transforms)
-        rgb = rgb.astype(np.float32) / 255.0
-        rgb = (rgb - np.array([0.485, 0.456, 0.406])) / np.array([0.229, 0.224, 0.225])
-        rgb = rgb.transpose(2, 0, 1)  # (H, W, C) -> (C, H, W)
-        
-        rgb_choose = get_resize_rgb_choose(choose, [y1, y2, x1, x2], cfg.img_size)
-
-        all_rgb.append(rgb.astype(np.float32))
-        all_cloud.append(cloud.astype(np.float32))
-        all_rgb_choose.append(rgb_choose.astype(np.int32))
-        all_score.append(score)
-        all_dets.append(inst)
-
-    ret_dict = {}
-    ret_dict['pts'] = np.stack(all_cloud)
-    ret_dict['rgb'] = np.stack(all_rgb)
-    ret_dict['rgb_choose'] = np.stack(all_rgb_choose)
-    ret_dict['score'] = np.array(all_score, dtype=np.float32)
-
-    ninstance = ret_dict['pts'].shape[0]
-    ret_dict['model'] = np.repeat(model_points[np.newaxis, :, :], ninstance, axis=0)
-    ret_dict['K'] = np.repeat(K[np.newaxis, :, :], ninstance, axis=0)
-    return ret_dict, whole_image, whole_pts.reshape(-1, 3), model_points, all_dets
-
 
 rgb_transform = transforms.Compose([transforms.ToTensor(),
                                 transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                                     std=[0.229, 0.224, 0.225])])
-
 
 def _get_template(path, cfg, device, tem_index=1):
     """
@@ -454,9 +250,6 @@ def get_templates(path, cfg, device):
         all_tem.append(torch.FloatTensor(tem).unsqueeze(0).to(device))
         all_tem_choose.append(torch.IntTensor(tem_choose).long().unsqueeze(0).to(device))
         all_tem_pts.append(torch.FloatTensor(tem_pts).unsqueeze(0).to(device))
-        # print("[all_tem] shape", tem.shape)
-        # print("[all_tem_pts] shape", tem_pts.shape)
-        # print("[all_tem_choose] shape", tem_choose.shape)
     return all_tem, all_tem_pts, all_tem_choose
 
 
@@ -488,9 +281,16 @@ def get_test_data(rgb_path, depth_path, cam_path, cad_path, seg_path, det_score_
     dets = []
     with open(seg_path) as f:
         dets_ = json.load(f) # keys: scene_id, image_id, category_id, bbox, score, segmentation
-    for det in dets_:
-        if det['score'] > det_score_thresh:
-            dets.append(det)
+    if dets_:
+        top_k = 3
+        print(f"[Logging] ==== get_test_data getting Top_{top_k} score as pem input ====")
+        top_k_dets = heapq.nlargest(top_k, dets_, key=lambda det: det['score'])
+        for det in top_k_dets:
+            if det['score'] > det_score_thresh:
+                dets.append(det)
+    # for det in dets_:
+    #     if det['score'] > det_score_thresh:
+    #         dets.append(det)
     del dets_
 
     cam_info = json.load(open(cam_path))
@@ -595,142 +395,6 @@ class OVPEM_Sub4(nn.Module):
 
         return pred_R, pred_t, pred_pose_score
 
-import importlib
-
-def torch_model_init(cfg, device):
-    print("=> creating model ...")
-    MODEL = importlib.import_module(cfg.model_name)
-    torch_model = MODEL.Net(cfg.model)
-    torch_model = torch_model.to(device)
-    torch_model.eval()
-    checkpoint = os.path.join(os.path.dirname((os.path.abspath(__file__))), 'checkpoints', 'sam-6d-pem-base.pth')
-    # load checkpoint with map_location
-    if gorilla_module is not None:
-        gorilla_module.solver.load_checkpoint(model=torch_model, filename=checkpoint, map_location=device)
-    else:
-        # Fallback: load checkpoint manually using PyTorch (partial/non-strict)
-        print("Loading checkpoint using PyTorch fallback method...")
-        try:
-            checkpoint_data = torch.load(checkpoint, map_location=device)
-            state = checkpoint_data.get('state_dict', checkpoint_data)
-            if isinstance(state, dict) and 'model' in state and isinstance(state['model'], dict):
-                state = state['model']
-            # strip common prefixes
-            def _strip_prefix(k, prefix):
-                return k[len(prefix):] if k.startswith(prefix) else k
-            normalized_state = {}
-            for k, v in state.items():
-                nk = k
-                for prefix in ('module.', 'model.', 'net.'):
-                    nk = _strip_prefix(nk, prefix)
-                normalized_state[nk] = v
-            model_state = torch_model.state_dict()
-            # filter by matching keys and shapes
-            filtered_state = {k: v for k, v in normalized_state.items() if k in model_state and v.shape == model_state[k].shape}
-            missing_keys = [k for k in model_state.keys() if k not in normalized_state]
-            unexpected_keys = [k for k in normalized_state.keys() if k not in model_state]
-            print(f"Partial checkpoint load -> matched: {len(filtered_state)}/{len(model_state)}, missing: {len(missing_keys)}, unexpected: {len(unexpected_keys)}")
-            model_state.update(filtered_state)
-            torch_model.load_state_dict(model_state, strict=False)
-            print("Checkpoint loaded with partial matching")
-        except Exception as e:
-            print(f"Warning: Could not load checkpoint: {e}")
-            print("Continuing with uninitialized model weights")
-    return torch_model
-
-def torch_infer(cfg, torch_model, device):
-    print("[PyTorch] extracting templates ...")
-    tem_path = os.path.join(cfg.output_dir, 'templates')
-    all_tem, all_tem_pts, all_tem_choose = get_templates(tem_path, cfg.test_dataset, device)
-    
-    torch_flag = True
-    if torch_flag:
-        # pytorch feature extraction inference
-        time_start = time.time()
-        with torch.no_grad():
-            all_tem_pts, all_tem_feat = torch_model.feature_extraction.get_obj_feats(all_tem, all_tem_pts, all_tem_choose)
-        fe_time = time.time() - time_start
-        print(f"[PyTorch] fe (feature extraction) inference time: {fe_time*1000:.2f} ms")
-    else:
-        core = Core()
-        ov_fe_model_path = "model_save/ov_fe_model.xml"
-        ov_fe_model = core.read_model(ov_fe_model_path)
-        ov_fe_compiled_model = core.compile_model(ov_fe_model, "GPU")
-        tem_rgb_list, tem_pts_list, tem_choose_list = get_templates(tem_path, cfg.test_dataset, device)
-        torch_fe_input = (tem_rgb_list, tem_pts_list, tem_choose_list)
-
-        rgb_input = torch.cat(tem_rgb_list, dim=1)            # (B, T*3, H, W)
-        pts_input = torch.cat(tem_pts_list, dim=1)            # (B, T*N, 3)
-        choose_input = torch.cat(tem_choose_list, dim=1)      # (B, T*N)
-        ov_fe_input = {
-            "rgb_input": rgb_input,
-            "pts_input": pts_input,
-            "choose_input": choose_input,
-        }
-        time_start = time.time()
-        ov_fe_results = ov_fe_compiled_model(ov_fe_input)
-        ov_fe_results_list = list(ov_fe_results.values())
-        fe_time = time.time() - time_start
-        print(f"[OpenVINO {device}] fe (feature extraction) inference time: {fe_time*1000:.2f} ms")
-        all_tem_pts = ov_fe_results_list[0]  # tem_pts_out
-        all_tem_feat = ov_fe_results_list[1]  # tem_feat
-
-        all_tem_pts = torch.from_numpy(all_tem_pts)
-        all_tem_feat= torch.from_numpy(all_tem_feat)
-    
-    # pytorch load input data
-    print("[PyTorch] loading input data ...")
-    input_data, img, whole_pts, model_points, detections = get_test_data(
-        cfg.rgb_path, cfg.depth_path, cfg.cam_path, cfg.cad_path, cfg.seg_path, 
-        cfg.det_score_thresh, cfg.test_dataset, device
-    )
-    ninstance = input_data['pts'].size(0)
-    
-    # pytorch pose estimation inference
-    print("[PyTorch] running model ...")
-    pem_time_start = time.time()
-    with torch.no_grad():
-        input_data['dense_po'] = all_tem_pts.repeat(ninstance,1,1)
-        input_data['dense_fo'] = all_tem_feat.repeat(ninstance,1,1)
-        model_input_tuple = (
-            input_data['pts'], input_data['rgb'], input_data['rgb_choose'], 
-            input_data['model'], input_data['dense_po'], input_data['dense_fo']
-        )
-        pred_R, pred_t, pred_pose_score = torch_model(*model_input_tuple)
-        pred_R = pred_R.detach().cpu().numpy()
-        pred_t = pred_t.detach().cpu().numpy()
-        pred_pose_score = pred_pose_score.detach().cpu().numpy()
-        # out = model(input_data)
-    pem_time = time.time() - pem_time_start
-    print(f"[PyTorch] pose estimation inference time: {pem_time*1000:.2f} ms")
-
-    # pytorch save results
-    if 'pred_pose_score' in input_data.keys():
-        pose_scores = pred_pose_score * input_data['score']
-    else:
-        pose_scores = input_data['score']
-    pose_scores = pose_scores.detach().cpu().numpy()
-    pred_rot = pred_R
-    pred_trans = pred_t * 1000
-    print("[PyTorch] visualizating ...")
-    os.makedirs(f"{cfg.output_dir}/sam6d_results", exist_ok=True)
-    for idx, det in enumerate(detections):
-        detections[idx]['score'] = float(pose_scores[idx])
-        detections[idx]['R'] = list(pred_rot[idx].tolist())
-        detections[idx]['t'] = list(pred_trans[idx].tolist())
-
-    with open(os.path.join(f"{cfg.output_dir}/sam6d_results", f'detection_pem_{cfg.device}.json'), "w") as f:
-        json.dump(detections, f)
-
-    print("[PyTorch] visualizating ...")
-    save_path = os.path.join(f"{cfg.output_dir}/sam6d_results", f'vis_pem_{cfg.device}.png')
-    valid_masks = pose_scores == pose_scores.max()
-    K = input_data['K'].detach().cpu().numpy()[valid_masks]
-    vis_img = visualize(img, pred_rot[valid_masks], pred_trans[valid_masks], model_points*1000, K, save_path)
-    vis_img.save(save_path)
-    print(f"[Torch Inference Done] Pose_Estimation_Model ({cfg.device} Version)") 
-    print(f"[PyTorch] PEM E2E Inference Time: {(fe_time + pem_time):.2f} s")
-
 def ov_model_init(core, model_dir="model_save", device="CPU"):
     ov_fe_model_path = os.path.join(model_dir, "ov_fe_model.xml")
     ov_pem_sub1_model_path = os.path.join(model_dir, "ov_pem_sub1_model.xml")
@@ -765,40 +429,21 @@ def ov_model_init(core, model_dir="model_save", device="CPU"):
                     ]
     return ov_model_list
 
-def ov_infer(cfg, ov_model_list, input_data, device, torch_model, torch_device):
-    print(f"[OpenVINO {device}] OV pem pipeline inference start...")
+def ov_infer(cfg, ov_model_list, ov_fe_input, input_data, device):
+    print(f"[OpenVINO {device}] OV PEM pipeline inference start...")
     # ================OpenVINO Inference==========================
 
-    tem_path = os.path.join(cfg.output_dir, 'templates')
-    all_tem, all_tem_pts, all_tem_choose = get_templates(tem_path, cfg.test_dataset, torch_device)
-    
-    rgb_input = torch.cat(all_tem, dim=1)            # (B, T*3, H, W)
-    pts_input = torch.cat(all_tem_pts, dim=1)            # (B, T*N, 3)
-    choose_input = torch.cat(all_tem_choose, dim=1)      # (B, T*N)
-    ov_fe_input = {
-        "rgb_input": rgb_input,
-        "pts_input": pts_input,
-        "choose_input": choose_input,
-    }
-
-    torch_flag = False
-    if torch_flag:
-        time_start = time.time()
-        with torch.no_grad():
-            all_tem_pts, all_tem_feat = torch_model.feature_extraction.get_obj_feats(all_tem, all_tem_pts, all_tem_choose)
-        fe_time = time.time() - time_start
-        print(f"[PyTorch] fe (feature extraction) inference time: {fe_time*1000:.2f} ms")
-    else:
-        ov_fe_compiled_model = ov_model_list[0]
-        time_start = time.time()
-        ov_fe_results = ov_fe_compiled_model(ov_fe_input)
-        ov_fe_results_list = list(ov_fe_results.values())
-        fe_time = time.time() - time_start
-        print(f"[OpenVINO {device}] fe (feature extraction) inference time: {fe_time*1000:.2f} ms")
-        all_tem_pts = ov_fe_results_list[0]  # tem_pts_out
-        all_tem_feat = ov_fe_results_list[1]  # tem_feat
+    ov_fe_compiled_model = ov_model_list[0]
+    time_start = time.time()
+    ov_fe_results = ov_fe_compiled_model(ov_fe_input)
+    ov_fe_results_list = list(ov_fe_results.values())
+    fe_time = time.time() - time_start
+    # print(f"[OpenVINO {device}] fe (feature extraction) inference time: {fe_time*1000:.2f} ms")
+    all_tem_pts = ov_fe_results_list[0]  # tem_pts_out
+    all_tem_feat = ov_fe_results_list[1]  # tem_feat
 
     # ================[Pass] OpenVINO FE Done==========================
+    pem_time_start = time.time()
     ninstance = input_data['pts'].shape[0]
     dense_po = np.repeat(all_tem_pts, ninstance, axis=0)
     dense_fo = np.repeat(all_tem_feat, ninstance, axis=0)
@@ -820,8 +465,8 @@ def ov_infer(cfg, ov_model_list, input_data, device, torch_model, torch_device):
     time_start = time.time()
     ov_pem_sub1_results = ov_pem_sub1_model_compiled(ov_pem_sub1_inputs)
     ov_pem_sub1_results = list(ov_pem_sub1_results.values())
-    pem_time = time.time() - time_start
-    print(f"[OpenVINO {device}] ov_pem_sub1 inference time: {pem_time*1000:.2f} ms")
+    pem_sub1_time = time.time() - time_start
+    # print(f"    [OpenVINO {device}] ov_pem_sub1 inference time: {pem_sub1_time*1000:.2f} ms")
 
     coarse_Rt_atten = ov_pem_sub1_results[0]
     sparse_pm = ov_pem_sub1_results[1]
@@ -843,7 +488,6 @@ def ov_infer(cfg, ov_model_list, input_data, device, torch_model, torch_device):
                              torch.from_numpy(sparse_po), torch.from_numpy(coarse_Rt_model_pts))
     torch_flag = True
     if torch_flag:
-        print("[IPEX Infer] pem_sub2 Start")
         pem_sub2_model = OVPEM_Sub2(cfg.model)
         torch_device = torch.device("xpu")
         pem_sub2_model.to(torch_device)
@@ -856,24 +500,8 @@ def ov_infer(cfg, ov_model_list, input_data, device, torch_model, torch_device):
             init_R = init_R.cpu().numpy()
             init_t = init_t.cpu().numpy()
         torch.xpu.empty_cache()
-        fe_time = time.time() - time_start
-        print(f"[IPEX Infer] pem_sub2 inference time: {fe_time*1000:.2f} ms")
-
-        # print("[Pytorch Infer] pem_sub2 Start")
-        # pem_sub2_model = OVPEM_Sub2(cfg.model)
-        # torch_device = torch.device("cpu")
-        # pem_sub2_model.to(torch_device)
-        # torch_pem_input_new = []
-        # for tmp_tensor in torch_pem_sub2_input:
-        #     torch_pem_input_new.append(tmp_tensor.to(torch_device))
-        # time_start = time.time()
-        # with torch.no_grad():
-        #     init_R, init_t = pem_sub2_model(*torch_pem_input_new)
-        #     init_R = init_R.cpu().numpy()
-        #     init_t = init_t.cpu().numpy()
-        # torch.xpu.empty_cache()
-        # fe_time = time.time() - time_start
-        # print(f"[Pytorch Infer] pem_sub2 inference time: {fe_time*1000:.2f} ms")
+        pem_sub2_time = time.time() - time_start
+        # print(f"    [Pytorch xpu] pem_sub2 inference time: {pem_sub2_time*1000:.2f} ms")
 
     else:
         ov_pem_sub2_input = {
@@ -886,8 +514,8 @@ def ov_infer(cfg, ov_model_list, input_data, device, torch_model, torch_device):
         time_start = time.time()
         ov_pem_sub2_results = ov_pem_sub2_model_compiled(ov_pem_sub2_input)
         ov_pem_sub2_results = list(ov_pem_sub2_results.values())
-        pem_time = time.time() - time_start
-        print(f"[OpenVINO {device}] ov_pem_sub2 inference time: {pem_time*1000:.2f} ms")
+        pem_sub2_time = time.time() - time_start
+        # print(f"    [OpenVINO {device}] ov_pem_sub2 inference time: {pem_sub2_time*1000:.2f} ms")
         
         init_R = ov_pem_sub2_results[0]
         init_t = ov_pem_sub2_results[1]
@@ -910,8 +538,8 @@ def ov_infer(cfg, ov_model_list, input_data, device, torch_model, torch_device):
     time_start = time.time()
     ov_pem_sub3_results = ov_pem_sub3_model_compiled(ov_pem_sub3_input)
     ov_pem_sub3_results = list(ov_pem_sub3_results.values())
-    pem_time = time.time() - time_start
-    print(f"[OpenVINO {device}] ov_pem_sub3 inference time: {pem_time*1000:.2f} ms")
+    pem_sub3_time = time.time() - time_start
+    # print(f"    [OpenVINO {device}] ov_pem_sub3 inference time: {pem_sub3_time*1000:.2f} ms")
 
     fine_Rt_atten = ov_pem_sub3_results[0]
     fine_Rt_model_pts = ov_pem_sub3_results[1]
@@ -920,7 +548,6 @@ def ov_infer(cfg, ov_model_list, input_data, device, torch_model, torch_device):
                             torch.from_numpy(dense_po_out), torch.from_numpy(fine_Rt_model_pts))
     torch_flag = False
     if torch_flag:
-        print("[Pytorch Infer] pem_sub4 Start")
         pem_sub4_model = OVPEM_Sub4(cfg.model)
         torch_device = torch.device("cpu")
         pem_sub4_model.to(torch_device)
@@ -933,9 +560,8 @@ def ov_infer(cfg, ov_model_list, input_data, device, torch_model, torch_device):
             pred_R = pred_R.cpu().numpy()
             pred_t = pred_t.cpu().numpy()
             pred_pose_score = pred_pose_score.cpu().numpy()
-        torch.xpu.empty_cache()
-        fe_time = time.time() - time_start
-        print(f"[Pytorch Infer] pem_sub4 inference time: {fe_time*1000:.2f} ms")
+        pem_sub4_time = time.time() - time_start
+        # print(f"    [Pytorch cpu] pem_sub4 inference time: {pem_sub4_time*1000:.2f} ms")
     else:
         ov_pem_sub4_model_compiled = ov_model_list[4]
         ov_pem_sub4_input = {
@@ -947,17 +573,26 @@ def ov_infer(cfg, ov_model_list, input_data, device, torch_model, torch_device):
         time_start = time.time()
         ov_pem_sub4_results = ov_pem_sub4_model_compiled(ov_pem_sub4_input)
         ov_pem_sub4_results = list(ov_pem_sub4_results.values())
-        pem_time = time.time() - time_start
-        print(f"[OpenVINO {device}] ov_pem_sub4 inference time: {pem_time*1000:.2f} ms")
+        pem_sub4_time = time.time() - time_start
+        # print(f"    [OpenVINO {device}] ov_pem_sub4 inference time: {pem_sub4_time*1000:.2f} ms")
         
         pred_R = ov_pem_sub4_results[0]
         pred_t = ov_pem_sub4_results[1]
         pred_pose_score = ov_pem_sub4_results[2]
     # ==============[Pass]OpenVINO Sub4 model ============================
+    pred_t = pred_t * (radius.reshape(-1, 1)+1e-6)
+    pem_model_time = time.time() - pem_time_start
+    if not first_run:
+        print(f"[OpenVINO {device}] fe (feature extraction) inference time: {fe_time*1000:.2f} ms")
+        print(f"[OpenVINO {device}] OpenVINO PEM model inference time: {pem_model_time*1000:.2f} ms")
+        print(f"    ov_pem_sub1 inference time: {pem_sub1_time*1000:.2f} ms")
+        print(f"    ov_pem_sub2 inference time: {pem_sub2_time*1000:.2f} ms")
+        print(f"    ov_pem_sub2 inference time: {pem_sub3_time*1000:.2f} ms")
+        print(f"    ov_pem_sub4 inference time: {pem_sub4_time*1000:.2f} ms")
     return pred_R, pred_t, pred_pose_score
 
-
 def main():
+    global first_run
     # init config
     cfg = init()
     seed = cfg.rd_seed
@@ -969,31 +604,38 @@ def main():
     # ov init
     core = Core()
     device = cfg.device
-
     torch_device = torch.device("cpu")
-    torch_model = torch_model_init(cfg, torch_device)
-    # torch_infer(cfg, torch_model, torch_device)
-
-    #======================================
-
     model_dir="model_save" 
 
     input_data, img, whole_pts, model_points, detections = get_test_data(
         cfg.rgb_path, cfg.depth_path, cfg.cam_path, cfg.cad_path, cfg.seg_path, 
         cfg.det_score_thresh, cfg.test_dataset, torch_device)
 
+    tem_path = os.path.join(cfg.output_dir, 'templates')
+    all_tem, all_tem_pts, all_tem_choose = get_templates(tem_path, cfg.test_dataset, torch_device)
+    
+    rgb_input = torch.cat(all_tem, dim=1)            # (B, T*3, H, W)
+    pts_input = torch.cat(all_tem_pts, dim=1)            # (B, T*N, 3)
+    choose_input = torch.cat(all_tem_choose, dim=1)      # (B, T*N)
+    ov_fe_input = {
+        "rgb_input": rgb_input,
+        "pts_input": pts_input,
+        "choose_input": choose_input,
+    }
+
     ov_model_list = ov_model_init(core, model_dir, device)
     
     # Warmup
-    ov_pred_R, ov_pred_t, ov_pred_pose_score = ov_infer(cfg, ov_model_list,input_data, device, torch_model, torch_device)
+    ov_pred_R, ov_pred_t, ov_pred_pose_score = ov_infer(cfg, ov_model_list, ov_fe_input, input_data, device)
     print("=================== [Warmup] ====================")
     ov_infer_start = time.time()
-    ov_pred_R, ov_pred_t, ov_pred_pose_score = ov_infer(cfg, ov_model_list,input_data, device, torch_model, torch_device)
+    first_run = False
+    ov_pred_R, ov_pred_t, ov_pred_pose_score = ov_infer(cfg, ov_model_list, ov_fe_input, input_data, device)
     ov_infer_end = time.time()
 
     pose_scores = ov_pred_pose_score * input_data['score'].detach().cpu().numpy()
     pred_rot = ov_pred_R
-    pred_trans = ov_pred_t * 100
+    pred_trans = ov_pred_t * 1000
 
     # Save results
     print("[OpenVINO] saving results ...")
@@ -1014,7 +656,7 @@ def main():
     vis_img = visualize(img, pred_rot[valid_masks], pred_trans[valid_masks], model_points*1000, K, save_path)
     vis_img.save(save_path)
     print(f"[OpenVINO Inference Done] Pose_Estimation_Model ({device} Version)") 
-    print(f"[OpenVINO] PEM E2E Inference Time: {(ov_infer_end - ov_infer_start):.2f} s, \n save_path : {save_path}")    
+    print(f"[OpenVINO] Pose_Estimation_Model pipeline E2E Inference Time: {(ov_infer_end - ov_infer_start)*1000:.2f} ms, save_path : {save_path}")    
 
 if __name__ == "__main__":
     main()
