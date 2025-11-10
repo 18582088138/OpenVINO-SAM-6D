@@ -21,7 +21,7 @@ from omegaconf import DictConfig, OmegaConf
 from torchvision.utils import save_image
 import torchvision.transforms as T
 import cv2
-import imageio
+import imageio.v2 as imageio
 import distinctipy
 from skimage.feature import canny
 from skimage.morphology import binary_dilation
@@ -32,6 +32,9 @@ from utils.bbox_utils import CropResizePad
 from model.utils import Detections, convert_npz_to_json
 from model.loss import Similarity
 from utils.inout import load_json, save_json_bop23
+
+import time
+import logging
 
 inv_rgb_transform = T.Compose(
         [
@@ -93,6 +96,7 @@ def batch_input_data(depth_path, cam_path, device):
     return batch
 
 def run_inference(segmentor_model, output_dir, cad_path, rgb_path, depth_path, cam_path, stability_score_thresh):
+    print(f"[OpenVINO] OV ISM pipeline inference start...")
     with initialize(version_base=None, config_path="configs"):
         cfg = compose(config_name='run_inference.yaml')
 
@@ -106,6 +110,7 @@ def run_inference(segmentor_model, output_dir, cad_path, rgb_path, depth_path, c
     else:
         raise ValueError("The segmentor_model {} is not supported now!".format(segmentor_model))
 
+    start_model_init = time.perf_counter()
     logging.info("Initializing model")
     model = instantiate(cfg.model)
     
@@ -121,7 +126,6 @@ def run_inference(segmentor_model, output_dir, cad_path, rgb_path, depth_path, c
         model.segmentor_model.model.setup_model(device=device, verbose=True)
     logging.info(f"Moving models to {device} done!")
         
-    
     logging.info("Initializing template")
     template_dir = os.path.join(output_dir, 'templates')
     num_templates = len(glob.glob(f"{template_dir}/*.npy"))
@@ -159,27 +163,66 @@ def run_inference(segmentor_model, output_dir, cad_path, rgb_path, depth_path, c
                 ).unsqueeze(0).data
     
     # run inference
+    ### Export to onnx
+    export_model = model.descriptor_model.model.cpu()
+    dummy_input = torch.rand_like(templates).cpu()
+    dummy_flag = False
+    start_infer = time.perf_counter()
+    # torch.onnx.export(export_model, dummy_input, "descriptor_dinov2_model.onnx", )
+    # torch.onnx.export(
+    #     export_model,
+    #     (dummy_input),
+    #     "descriptor_dinov2_model_infer.onnx",
+    #     export_params=True,
+    #     opset_version=17,
+    #     do_constant_folding=False,  # Keep both branches
+    #     input_names=["images"],
+    #     dynamic_axes={"input": {0: "batch"}}
+    # )
+    ov_infer_start = time.time()
     rgb = Image.open(rgb_path).convert("RGB")
+    start_gen_masks = time.perf_counter()
     detections = model.segmentor_model.generate_masks(np.array(rgb))
+    end_gen_masks = time.perf_counter()
+    print(f"    [Timing] generate_masks time: {(end_gen_masks - start_gen_masks)*1000:.2f} ms")
+    #print(rgb.size)
+    # # export model: model.segmentor_model.model.predictor.model
+    # # export input: images [n, 3, h, w] --> /home/intel/miniforge3/envs/sam6d/lib/python3.9/site-packages/ultralytics/yolo/engine/predictor.py line 124
+    # # export input shape [n, 3, h, w], n=1, np.array(rgb) [h, w, 3]: h=np.array(rgb).shape[0], w=np.array(rgb).shape[1]
+    # temp_rgb = np.array(rgb) # obtain h, w
+    # height, width = temp_rgb.shape[0], temp_rgb.shape[1]
+    # export_input = torch.rand(1, 3, height, width)
+    # export_model = model.segmentor_model.model.predictor.model.cpu()
+    # torch.onnx.export(export_model, export_input, "fastsam_yolo_v8_predictor.onnx")
     detections = Detections(detections)
-    query_decriptors, query_appe_descriptors = model.descriptor_model.forward(np.array(rgb), detections)
+    #print(np.array(rgb).shape)
 
-    # matching descriptors
+    start_forward = time.perf_counter()
+    query_decriptors, query_appe_descriptors = model.descriptor_model.forward(np.array(rgb), detections)
+    end_forward = time.perf_counter()
+    print(f"    [Timing] descriptor_model.forward time: {(end_forward - start_forward)*1000:.2f} ms")
+
+    start_sem = time.perf_counter()
     (
         idx_selected_proposals,
         pred_idx_objects,
         semantic_score,
         best_template,
     ) = model.compute_semantic_score(query_decriptors)
+    end_sem = time.perf_counter()
+    print(f"    [Timing] compute_semantic_score time: {(end_sem - start_sem)*1000:.2f} ms")
 
     # update detections
     detections.filter(idx_selected_proposals)
     query_appe_descriptors = query_appe_descriptors[idx_selected_proposals, :]
 
     # compute the appearance score
+    start_appe = time.perf_counter()
     appe_scores, ref_aux_descriptor= model.compute_appearance_score(best_template, pred_idx_objects, query_appe_descriptors)
-
+    end_appe = time.perf_counter()
+    print(f"    [Timing] compute_appearance_score time: {(end_appe - start_appe)*1000:.2f} ms")
     # compute the geometric score
+    
     batch = batch_input_data(depth_path, cam_path, device)
     template_poses = get_obj_poses_from_template_level(level=2, pose_distribution="all")
     template_poses[:, :3, 3] *= 0.4
@@ -192,10 +235,22 @@ def run_inference(segmentor_model, output_dir, cad_path, rgb_path, depth_path, c
     
     image_uv = model.project_template_to_image(best_template, pred_idx_objects, batch, detections.masks)
 
+    start_geo = time.perf_counter()
     geometric_score, visible_ratio = model.compute_geometric_score(
         image_uv, detections, query_appe_descriptors, ref_aux_descriptor, visible_thred=model.visible_thred
         )
-
+    end_geo = time.perf_counter()
+    print(f"    [Timing] compute_geometric_score time: {(end_geo - start_geo)*1000:.2f} ms")
+    
+    total_stage_time = (
+        (end_gen_masks - start_gen_masks)
+        + (end_forward - start_forward)
+        + (end_sem - start_sem)
+        + (end_appe - start_appe)
+        + (end_geo - start_geo)
+    )
+    ov_infer_end = time.time()
+    print(f"[Timing] Sum of 5 core stages: {total_stage_time*1000:.2f} ms")
     # final score
     final_score = (semantic_score + appe_scores + geometric_score*visible_ratio) / (1 + 1 + visible_ratio)
 
@@ -209,6 +264,8 @@ def run_inference(segmentor_model, output_dir, cad_path, rgb_path, depth_path, c
     save_json_bop23(save_path+".json", detections)
     vis_img = visualize(rgb, detections, f"{output_dir}/sam6d_results/vis_ism.png")
     vis_img.save(f"{output_dir}/sam6d_results/vis_ism.png")
+    print(f"[OpenVINO] OpenVINO Instance_Segmentation_Model pipeline E2E Inference Time: {(ov_infer_end - ov_infer_start)*1000:.2f} ms, save_path : {output_dir}/sam6d_results/vis_ism.png")
+    
     
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -225,4 +282,3 @@ if __name__ == "__main__":
         args.segmentor_model, args.output_dir, args.cad_path, args.rgb_path, args.depth_path, args.cam_path, 
         stability_score_thresh=args.stability_score_thresh,
     )
-    print("[Inference Done]")
